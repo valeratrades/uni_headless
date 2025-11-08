@@ -23,3 +23,7 @@ get_last_with_len = "allow"
 [dependencies]
 derive-new = "^0"
 color-eyre = "^0.6.3"
+chromiumoxide = { version = "0.7", features = ["tokio-runtime"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+futures = "0.3"
