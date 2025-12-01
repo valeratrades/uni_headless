@@ -7,7 +7,7 @@ use uni_headless::{
 	Choice, Question,
 	config::{AppConfig, SettingsFlags},
 };
-use v_utils::{clientside, elog, log};
+use v_utils::{clientside, elog, io::confirm, log};
 
 #[derive(Debug, Parser)]
 #[command(name = "uni_headless")]
@@ -247,28 +247,52 @@ async fn main() -> Result<()> {
 
 	log!("Successfully navigated to: {:?}", final_url);
 
-	// Parse questions from the page
-	log!("Parsing questions from the page...");
-	let questions = parse_questions(&page).await?;
+	// Parse and answer questions in a loop
+	let mut question_num = 0;
+	loop {
+		log!("Parsing questions from the page...");
+		let questions = parse_questions(&page).await?;
 
-	for (i, question) in questions.iter().enumerate() {
-		log!("--- Question {} ---", i + 1);
-		log!("Text: {}", question.question_text());
-		if let Some(choices) = question.choices() {
-			for (j, choice) in choices.iter().enumerate() {
-				let selected_marker = if choice.selected { " [SELECTED]" } else { "" };
-				log!("  {}. {}{}", j + 1, choice.text, selected_marker);
-			}
+		if questions.is_empty() {
+			log!("No more questions found.");
+			break;
 		}
 
-		if args.ask_llm {
-			match ask_llm_for_answer(question).await {
-				Ok((answer_idx, answer_text)) => {
-					log!("Selected: {}. {}", answer_idx + 1, answer_text);
+		for question in &questions {
+			question_num += 1;
+			log!("--- Question {} ---", question_num);
+			log!("Text: {}", question.question_text());
+			if let Some(choices) = question.choices() {
+				for (j, choice) in choices.iter().enumerate() {
+					let selected_marker = if choice.selected { " [SELECTED]" } else { "" };
+					log!("  {}. {}{}", j + 1, choice.text, selected_marker);
 				}
-				Err(e) => {
-					elog!("Failed to get LLM answer: {}", e);
+			}
+
+			if args.ask_llm {
+				match ask_llm_for_answer(question).await {
+					Ok((answer_idx, answer_text)) => {
+						log!("Selected: {}. {}", answer_idx + 1, answer_text);
+
+						if confirm("Submit this answer?") {
+							if let Some(choices) = question.choices() {
+								let choice = &choices[answer_idx];
+								select_answer(&page, &choice.input_name, &choice.input_value).await?;
+								click_submit(&page).await?;
+								log!("Answer submitted!");
+							}
+						} else {
+							log!("Stopped by user.");
+							break;
+						}
+					}
+					Err(e) => {
+						elog!("Failed to get LLM answer: {}", e);
+						break;
+					}
 				}
+			} else {
+				break;
 			}
 		}
 	}
@@ -405,7 +429,12 @@ Respond with JSON only, no markdown, in this exact format:
 
 	tracing::debug!("LLM raw response: {}", response.text);
 
-	let answer: LlmAnswer = serde_json::from_str(response.text.trim()).map_err(|e| color_eyre::eyre::eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, response.text))?;
+	// Strip markdown code blocks if present
+	let json_str = response.text.trim();
+	let json_str = json_str.strip_prefix("```json").or_else(|| json_str.strip_prefix("```")).unwrap_or(json_str);
+	let json_str = json_str.strip_suffix("```").unwrap_or(json_str).trim();
+
+	let answer: LlmAnswer = serde_json::from_str(json_str).map_err(|e| color_eyre::eyre::eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, response.text))?;
 
 	if answer.response_number == 0 || answer.response_number > choices.len() {
 		return Err(color_eyre::eyre::eyre!(
@@ -416,4 +445,65 @@ Respond with JSON only, no markdown, in this exact format:
 	}
 
 	Ok((answer.response_number - 1, answer.response))
+}
+
+/// Select an answer by clicking the radio button
+async fn select_answer(page: &chromiumoxide::Page, input_name: &str, input_value: &str) -> Result<()> {
+	let script = format!(
+		r#"
+		(function() {{
+			const radio = document.querySelector('input[name="{}"][value="{}"]');
+			if (radio) {{
+				radio.click();
+				return true;
+			}}
+			return false;
+		}})()
+		"#,
+		input_name, input_value
+	);
+
+	let result = page.evaluate(script).await.map_err(|e| color_eyre::eyre::eyre!("Failed to select answer: {}", e))?;
+
+	if result.value().and_then(|v| v.as_bool()) != Some(true) {
+		return Err(color_eyre::eyre::eyre!("Failed to find radio button"));
+	}
+
+	Ok(())
+}
+
+/// Click the submit button on the quiz page
+async fn click_submit(page: &chromiumoxide::Page) -> Result<()> {
+	let script = r#"
+		(function() {
+			// Try common submit button selectors for Moodle
+			const selectors = [
+				'input[type="submit"][name="next"]',
+				'input[type="submit"]',
+				'button[type="submit"]',
+				'.submitbtns input[type="submit"]',
+				'#responseform input[type="submit"]'
+			];
+
+			for (const selector of selectors) {
+				const btn = document.querySelector(selector);
+				if (btn) {
+					btn.click();
+					return true;
+				}
+			}
+			return false;
+		})()
+	"#;
+
+	let result = page.evaluate(script).await.map_err(|e| color_eyre::eyre::eyre!("Failed to click submit: {}", e))?;
+
+	if result.value().and_then(|v| v.as_bool()) != Some(true) {
+		return Err(color_eyre::eyre::eyre!("Failed to find submit button"));
+	}
+
+	// Wait for page to process submission
+	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+	Ok(())
 }
