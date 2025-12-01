@@ -9,16 +9,16 @@ cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
 [dependencies]
 ask_llm = { version = "^0.2.0", default-features = false }
-chromiumoxide = { version = "0.7", features = ["tokio-runtime"] }
+chromiumoxide = { version = "0.8", features = ["tokio-runtime"] }
 clap = { version = "4", features = ["derive"] }
-color-eyre = "^0.6.3"
+color-eyre = "^0.6.5"
 derive-new = "^0"
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-v_utils = { version = "2.9.10", features = ["xdg", "cli"] }
+v_utils = { version = "2.11.0", features = ["xdg", "cli"] }
 
 [lints.clippy]
 # Stable

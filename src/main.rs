@@ -7,7 +7,11 @@ use uni_headless::{
 	Choice, Question,
 	config::{AppConfig, SettingsFlags},
 };
-use v_utils::{clientside, elog, io::confirm, log};
+use v_utils::{
+	clientside, elog,
+	io::{ConfirmAllResult, confirm_all},
+	log,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "uni_headless")]
@@ -32,7 +36,7 @@ struct Args {
 async fn main() -> Result<()> {
 	clientside!();
 	let args = Args::parse();
-	let config = AppConfig::try_build(args.settings)?;
+	let mut config = AppConfig::try_build(args.settings)?;
 
 	log!("Starting Moodle login automation...");
 	log!("Visible mode: {}", args.visible);
@@ -274,16 +278,47 @@ async fn main() -> Result<()> {
 					Ok((answer_idx, answer_text)) => {
 						log!("Selected: {}. {}", answer_idx + 1, answer_text);
 
-						if confirm("Submit this answer?") {
-							if let Some(choices) = question.choices() {
-								let choice = &choices[answer_idx];
-								select_answer(&page, &choice.input_name, &choice.input_value).await?;
-								click_submit(&page).await?;
-								log!("Answer submitted!");
-							}
+						let should_submit = if config.auto_submit {
+							Some(true)
 						} else {
-							log!("Stopped by user.");
-							break;
+							// Race between user confirmation and detecting manual submission
+							tokio::select! {
+								biased;
+								result = confirm_all("Submit this answer?") => {
+									match result {
+										ConfirmAllResult::Yes => Some(true),
+										ConfirmAllResult::All => {
+											// SAFETY: single-threaded, no concurrent reads
+											unsafe { config.set_auto_submit(true) };
+											Some(true)
+										}
+										ConfirmAllResult::No => None, // User will submit manually
+									}
+								}
+								_ = wait_for_page_change(&page) => {
+									log!("User submitted manually.");
+									Some(false) // Already submitted, don't submit again
+								}
+							}
+						};
+
+						match should_submit {
+							Some(true) =>
+								if let Some(choices) = question.choices() {
+									let choice = &choices[answer_idx];
+									select_answer(&page, &choice.input_name, &choice.input_value).await?;
+									click_submit(&page).await?;
+									log!("Answer submitted!");
+								},
+							Some(false) => {
+								// Already submitted by user, continue to next question
+							}
+							None => {
+								// User said no, wait for them to submit manually
+								log!("Waiting for manual submission...");
+								wait_for_page_change(&page).await?;
+								log!("Page changed, continuing...");
+							}
 						}
 					}
 					Err(e) => {
@@ -506,4 +541,21 @@ async fn click_submit(page: &chromiumoxide::Page) -> Result<()> {
 	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
 	Ok(())
+}
+
+/// Wait for the page URL to change (indicating form submission)
+async fn wait_for_page_change(page: &chromiumoxide::Page) -> Result<()> {
+	let initial_url = page.url().await.map_err(|e| color_eyre::eyre::eyre!("Failed to get URL: {}", e))?;
+
+	loop {
+		tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+		let current_url = page.url().await.map_err(|e| color_eyre::eyre::eyre!("Failed to get URL: {}", e))?;
+
+		if current_url != initial_url {
+			// Wait a bit for page to fully load
+			tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+			return Ok(());
+		}
+	}
 }
