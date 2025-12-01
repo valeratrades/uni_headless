@@ -7,6 +7,19 @@
 [<img alt="ci errors" src="https://img.shields.io/github/actions/workflow/status/valeratrades/uni_headless/errors.yml?branch=master&style=for-the-badge&style=flat-square&label=errors&labelColor=420d09" height="20">](https://github.com/valeratrades/uni_headless/actions?query=branch%3Amaster) <!--NB: Won't find it if repo is private-->
 [<img alt="ci warnings" src="https://img.shields.io/github/actions/workflow/status/valeratrades/uni_headless/warnings.yml?branch=master&style=for-the-badge&style=flat-square&label=warnings&labelColor=d16002" height="20">](https://github.com/valeratrades/uni_headless/actions?query=branch%3Amaster) <!--NB: Won't find it if repo is private-->
 
+Headless browser automation for Moodle quizzes with optional LLM-powered answer selection.
+
+## Usage
+```sh
+# Basic usage - login and navigate to quiz
+uni_headless -u <username> -p <password> -t <quiz_url>
+
+# With visible browser window
+uni_headless -u <username> -p <password> -t <quiz_url> --visible
+
+# With LLM answering questions
+uni_headless -u <username> -p <password> -t <quiz_url> --ask-llm
+```
 
 
 
