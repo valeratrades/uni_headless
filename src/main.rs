@@ -264,19 +264,30 @@ async fn main() -> Result<()> {
 
 		for question in &questions {
 			question_num += 1;
-			log!("--- Question {} ---", question_num);
+			let type_marker = if question.is_multi() { "[multi]" } else { "[single]" };
+			log!("--- Question {} {} ---", question_num, type_marker);
 			log!("Text: {}", question.question_text());
-			if let Some(choices) = question.choices() {
-				for (j, choice) in choices.iter().enumerate() {
-					let selected_marker = if choice.selected { " [SELECTED]" } else { "" };
-					log!("  {}. {}{}", j + 1, choice.text, selected_marker);
-				}
+			let choices = question.choices();
+			for (j, choice) in choices.iter().enumerate() {
+				let selected_marker = if choice.selected { " [SELECTED]" } else { "" };
+				log!("  {}. {}{}", j + 1, choice.text, selected_marker);
 			}
 
 			if args.ask_llm {
 				match ask_llm_for_answer(question).await {
-					Ok((answer_idx, answer_text)) => {
-						log!("Selected: {}. {}", answer_idx + 1, answer_text);
+					Ok(answer_result) => {
+						// Display selected answer(s)
+						match &answer_result {
+							LlmAnswerResult::Single { idx, text } => {
+								log!("Selected: {}. {}", idx + 1, text);
+							}
+							LlmAnswerResult::Multi { indices, texts } => {
+								log!("Selected:");
+								for (idx, text) in indices.iter().zip(texts.iter()) {
+									log!("  {}. {}", idx + 1, text);
+								}
+							}
+						}
 
 						let should_submit = if config.auto_submit {
 							Some(true)
@@ -303,13 +314,22 @@ async fn main() -> Result<()> {
 						};
 
 						match should_submit {
-							Some(true) =>
-								if let Some(choices) = question.choices() {
-									let choice = &choices[answer_idx];
-									select_answer(&page, &choice.input_name, &choice.input_value).await?;
-									click_submit(&page).await?;
-									log!("Answer submitted!");
-								},
+							Some(true) => {
+								let choices = question.choices();
+								match &answer_result {
+									LlmAnswerResult::Single { idx, .. } => {
+										let choice = &choices[*idx];
+										select_answer(&page, &choice.input_name, &choice.input_value).await?;
+									}
+									LlmAnswerResult::Multi { indices, .. } =>
+										for idx in indices {
+											let choice = &choices[*idx];
+											select_answer(&page, &choice.input_name, &choice.input_value).await?;
+										},
+								}
+								click_submit(&page).await?;
+								log!("Answer submitted!");
+							}
 							Some(false) => {
 								// Already submitted by user, continue to next question
 							}
@@ -351,7 +371,7 @@ async fn main() -> Result<()> {
 	Ok(())
 }
 
-/// Parse multiple choice questions from the quiz page
+/// Parse questions from the quiz page
 async fn parse_questions(page: &chromiumoxide::Page) -> Result<Vec<Question>> {
 	let parse_script = r#"
 		(function() {
@@ -365,29 +385,48 @@ async fn parse_questions(page: &chromiumoxide::Page) -> Result<Vec<Question>> {
 				const qtextEl = formulation.querySelector('.qtext');
 				const questionText = qtextEl ? qtextEl.innerText.trim() : '';
 
-				// Find all answer options (radio buttons for single-choice)
+				// Find all answer options
 				const answerDiv = formulation.querySelector('.answer');
 				if (!answerDiv) continue;
 
-				const choices = [];
+				// Check for radio buttons (single choice) or checkboxes (multi choice)
 				const radioInputs = answerDiv.querySelectorAll('input[type="radio"]');
+				const checkboxInputs = answerDiv.querySelectorAll('input[type="checkbox"]');
 
-				for (const radio of radioInputs) {
-					// Get the label text for this radio
-					const labelEl = radio.closest('div')?.querySelector('label, .ml-1, .flex-fill');
-					const labelText = labelEl ? labelEl.innerText.trim() : '';
+				const choices = [];
+				let questionType = 'SingleChoice';
 
-					choices.push({
-						input_name: radio.name || '',
-						input_value: radio.value || '',
-						text: labelText,
-						selected: radio.checked
-					});
+				if (radioInputs.length > 0) {
+					questionType = 'SingleChoice';
+					for (const radio of radioInputs) {
+						const labelEl = radio.closest('div')?.querySelector('label, .ml-1, .flex-fill');
+						const labelText = labelEl ? labelEl.innerText.trim() : '';
+
+						choices.push({
+							input_name: radio.name || '',
+							input_value: radio.value || '',
+							text: labelText,
+							selected: radio.checked
+						});
+					}
+				} else if (checkboxInputs.length > 0) {
+					questionType = 'MultiChoice';
+					for (const checkbox of checkboxInputs) {
+						const labelEl = checkbox.closest('div')?.querySelector('label, .ml-1, .flex-fill');
+						const labelText = labelEl ? labelEl.innerText.trim() : '';
+
+						choices.push({
+							input_name: checkbox.name || '',
+							input_value: checkbox.value || '',
+							text: labelText,
+							selected: checkbox.checked
+						});
+					}
 				}
 
 				if (choices.length > 0) {
 					questions.push({
-						type: 'MultiChoice',
+						type: questionType,
 						question_text: questionText,
 						choices: choices
 					});
@@ -409,6 +448,7 @@ async fn parse_questions(page: &chromiumoxide::Page) -> Result<Vec<Question>> {
 
 	for item in parsed {
 		let question_text = item["question_text"].as_str().unwrap_or("").to_string();
+		let question_type = item["type"].as_str().unwrap_or("SingleChoice");
 		let choices_json = item["choices"].as_array();
 
 		if let Some(choices_arr) = choices_json {
@@ -422,31 +462,66 @@ async fn parse_questions(page: &chromiumoxide::Page) -> Result<Vec<Question>> {
 				})
 				.collect();
 
-			questions.push(Question::MultiChoice { question_text, choices });
+			let question = match question_type {
+				"MultiChoice" => Question::MultiChoice { question_text, choices },
+				_ => Question::SingleChoice { question_text, choices },
+			};
+			questions.push(question);
 		}
 	}
 
 	Ok(questions)
 }
 
-/// LLM response structure for multi-choice questions
+/// LLM response for single-choice questions
 #[derive(Debug, serde::Deserialize)]
-struct LlmAnswer {
+struct LlmSingleAnswer {
 	response: String,
 	response_number: usize,
 }
 
-/// Ask the LLM to answer a multi-choice question
-async fn ask_llm_for_answer(question: &Question) -> Result<(usize, String)> {
-	let Question::MultiChoice { question_text, choices } = question;
+/// LLM response for multi-choice questions
+#[derive(Debug, serde::Deserialize)]
+struct LlmMultiAnswer {
+	responses: Vec<String>,
+	response_numbers: Vec<usize>,
+}
+
+/// Result of LLM answering a question
+pub enum LlmAnswerResult {
+	Single { idx: usize, text: String },
+	Multi { indices: Vec<usize>, texts: Vec<String> },
+}
+
+/// Ask the LLM to answer a question
+async fn ask_llm_for_answer(question: &Question) -> Result<LlmAnswerResult> {
+	let question_text = question.question_text();
+	let choices = question.choices();
 
 	let mut options_text = String::new();
 	for (i, choice) in choices.iter().enumerate() {
 		options_text.push_str(&format!("{}. {}\n", i + 1, choice.text));
 	}
 
-	let prompt = format!(
-		r#"You are answering a multiple-choice question. Pick the correct answer.
+	let (prompt, max_tokens) = if question.is_multi() {
+		(
+			format!(
+				r#"You are answering a multiple-choice question where MULTIPLE answers may be correct. Select ALL correct answers.
+
+Question:
+{question_text}
+
+Options:
+{options_text}
+Respond with JSON only, no markdown, in this exact format:
+{{"responses": ["<text of first correct answer>", "<text of second correct answer>", ...], "response_numbers": [<number of first correct answer>, <number of second correct answer>, ...]}}"#
+			),
+			256,
+		)
+	} else {
+		(
+			format!(
+				r#"You are answering a single-choice question. Pick the ONE correct answer.
 
 Question:
 {question_text}
@@ -455,12 +530,15 @@ Options:
 {options_text}
 Respond with JSON only, no markdown, in this exact format:
 {{"response": "<the text of the correct answer>", "response_number": <the number of the correct answer>}}"#
-	);
+			),
+			128,
+		)
+	};
 
 	let mut conv = Conversation::new();
 	conv.add(Role::User, prompt);
 
-	let response = ask_llm::conversation(&conv, Model::Medium, Some(128), None).await?;
+	let response = ask_llm::conversation(&conv, Model::Medium, Some(max_tokens), None).await?;
 
 	tracing::debug!("LLM raw response: {}", response.text);
 
@@ -469,27 +547,44 @@ Respond with JSON only, no markdown, in this exact format:
 	let json_str = json_str.strip_prefix("```json").or_else(|| json_str.strip_prefix("```")).unwrap_or(json_str);
 	let json_str = json_str.strip_suffix("```").unwrap_or(json_str).trim();
 
-	let answer: LlmAnswer = serde_json::from_str(json_str).map_err(|e| color_eyre::eyre::eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, response.text))?;
+	if question.is_multi() {
+		let answer: LlmMultiAnswer = serde_json::from_str(json_str).map_err(|e| color_eyre::eyre::eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, response.text))?;
 
-	if answer.response_number == 0 || answer.response_number > choices.len() {
-		return Err(color_eyre::eyre::eyre!(
-			"LLM returned invalid answer index: {} (expected 1-{})",
-			answer.response_number,
-			choices.len()
-		));
+		// Validate all indices
+		for &num in &answer.response_numbers {
+			if num == 0 || num > choices.len() {
+				return Err(color_eyre::eyre::eyre!("LLM returned invalid answer index: {} (expected 1-{})", num, choices.len()));
+			}
+		}
+
+		let indices: Vec<usize> = answer.response_numbers.iter().map(|n| n - 1).collect();
+		Ok(LlmAnswerResult::Multi { indices, texts: answer.responses })
+	} else {
+		let answer: LlmSingleAnswer = serde_json::from_str(json_str).map_err(|e| color_eyre::eyre::eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, response.text))?;
+
+		if answer.response_number == 0 || answer.response_number > choices.len() {
+			return Err(color_eyre::eyre::eyre!(
+				"LLM returned invalid answer index: {} (expected 1-{})",
+				answer.response_number,
+				choices.len()
+			));
+		}
+
+		Ok(LlmAnswerResult::Single {
+			idx: answer.response_number - 1,
+			text: answer.response,
+		})
 	}
-
-	Ok((answer.response_number - 1, answer.response))
 }
 
-/// Select an answer by clicking the radio button
+/// Select an answer by clicking the input (radio button or checkbox)
 async fn select_answer(page: &chromiumoxide::Page, input_name: &str, input_value: &str) -> Result<()> {
 	let script = format!(
 		r#"
 		(function() {{
-			const radio = document.querySelector('input[name="{}"][value="{}"]');
-			if (radio) {{
-				radio.click();
+			const input = document.querySelector('input[name="{}"][value="{}"]');
+			if (input) {{
+				input.click();
 				return true;
 			}}
 			return false;
@@ -501,7 +596,7 @@ async fn select_answer(page: &chromiumoxide::Page, input_name: &str, input_value
 	let result = page.evaluate(script).await.map_err(|e| color_eyre::eyre::eyre!("Failed to select answer: {}", e))?;
 
 	if result.value().and_then(|v| v.as_bool()) != Some(true) {
-		return Err(color_eyre::eyre::eyre!("Failed to find radio button"));
+		return Err(color_eyre::eyre::eyre!("Failed to find input element"));
 	}
 
 	Ok(())
