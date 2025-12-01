@@ -7,6 +7,14 @@ edition = "2024"
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
+[dependencies]
+chromiumoxide = { version = "0.7", features = ["tokio-runtime"] }
+clap = { version = "4", features = ["derive"] }
+color-eyre = "^0.6.3"
+derive-new = "^0"
+futures = "0.3"
+tokio = { version = "1", features = ["full"] }
+
 [lints.clippy]
 # Stable
 float_cmp = "allow" # is bad for `==` direct comparisons, but `<` and `>` should be allowed
@@ -18,12 +26,3 @@ tabs_in_doc_comments = "allow"
 # const fns, so actually more performant
 get_first = "allow"
 get_last_with_len = "allow"
-
-
-[dependencies]
-derive-new = "^0"
-color-eyre = "^0.6.3"
-chromiumoxide = { version = "0.7", features = ["tokio-runtime"] }
-tokio = { version = "1", features = ["full"] }
-clap = { version = "4", features = ["derive"] }
-futures = "0.3"

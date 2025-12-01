@@ -1,75 +1,32 @@
-# Uni Headless - Moodle Login Automation
+# uni_headless
+![Minimum Supported Rust Version](https://img.shields.io/badge/nightly-1.93+-ab6000.svg)
+[<img alt="crates.io" src="https://img.shields.io/crates/v/uni_headless.svg?color=fc8d62&logo=rust" height="20" style=flat-square>](https://crates.io/crates/uni_headless)
+[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs&style=flat-square" height="20">](https://docs.rs/uni_headless)
+![Lines Of Code](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/valeratrades/b48e6f02c61942200e7d1e3eeabf9bcb/raw/uni_headless-loc.json)
+<br>
+[<img alt="ci errors" src="https://img.shields.io/github/actions/workflow/status/valeratrades/uni_headless/errors.yml?branch=master&style=for-the-badge&style=flat-square&label=errors&labelColor=420d09" height="20">](https://github.com/valeratrades/uni_headless/actions?query=branch%3Amaster) <!--NB: Won't find it if repo is private-->
+[<img alt="ci warnings" src="https://img.shields.io/github/actions/workflow/status/valeratrades/uni_headless/warnings.yml?branch=master&style=for-the-badge&style=flat-square&label=warnings&labelColor=d16002" height="20">](https://github.com/valeratrades/uni_headless/actions?query=branch%3Amaster) <!--NB: Won't find it if repo is private-->
 
-Automated Moodle login and navigation tool built with Rust and chromiumoxide.
 
-## Features
 
-- Automated login to Moodle (https://moodle2025.uca.fr)
-- Login verification by checking for user menu elements
-- Automatic navigation to target quiz/course pages
-- Headless mode for automation or visible mode for debugging
-- Configurable credentials and target URLs via CLI
 
-## Prerequisites
+<br>
 
-- Rust toolchain (1.93+ recommended)
-- Chrome/Chromium browser installed on your system
+<sup>
+	This repository follows <a href="https://github.com/valeratrades/.github/tree/master/best_practices">my best practices</a> and <a href="https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md">Tiger Style</a> (except "proper capitalization for acronyms": (VsrState, not VSRState) and formatting).
+</sup>
 
-## Building
+#### License
 
-```bash
-cargo build --release
-```
+<sup>
+	Licensed under <a href="LICENSE">Blue Oak 1.0.0</a>
+</sup>
 
-## Usage
+<br>
 
-### Basic usage (headless mode):
-```bash
-./target/release/uni_headless \
-  --username YOUR_USERNAME \
-  --password YOUR_PASSWORD \
-  --target-url "https://moodle2025.uca.fr/mod/quiz/attempt.php?attempt=XXXXX&cmid=XXXXX&page=X"
-```
+<sub>
+	Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this crate by you, as defined in the Apache-2.0 license, shall
+be licensed as above, without any additional terms or conditions.
+</sub>
 
-### With visible browser (to see what's happening):
-```bash
-./target/release/uni_headless \
-  --visible \
-  --username YOUR_USERNAME \
-  --password YOUR_PASSWORD \
-  --target-url "https://moodle2025.uca.fr/course/view.php?id=123"
-```
-
-## CLI Options
-
-- `-v, --visible` - Run with visible browser window (non-headless mode)
-- `-u, --username <USERNAME>` - Username for Moodle login (required)
-- `-p, --password <PASSWORD>` - Password for Moodle login (required)
-- `-t, --target-url <TARGET_URL>` - Target URL to navigate to after login (required)
-- `-h, --help` - Print help information
-
-## How it works
-
-1. Launches a Chromium browser instance (headless or visible based on flag)
-2. Navigates to Moodle main page
-3. Finds and fills the username field
-4. Finds and fills the password field
-5. Submits the login form
-6. Verifies login success by checking for user menu elements
-7. Navigates to the specified target URL
-8. In visible mode, keeps browser open until Ctrl+C is pressed
-
-## Troubleshooting
-
-If the login fails:
-1. Run with `--visible` flag to see what's happening
-2. Check if the Moodle login page structure has changed
-3. Verify your credentials are correct
-4. Check your internet connection
-
-## Technology Stack
-
-- **chromiumoxide** - Rust library for controlling Chrome/Chromium (similar to Puppeteer for Node.js)
-- **tokio** - Async runtime
-- **clap** - Command-line argument parsing
-- **color-eyre** - Better error handling and reporting
