@@ -240,30 +240,29 @@ async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool, config: &mut
 
 	// Save the editor page HTML
 	if let Err(e) = save_page_html(page, "vpl_editor").await {
-		elog!("Failed to save editor page HTML: {}", e);
+		elog!("Failed to save editor page HTML: {e}");
 	}
 
 	log!("Pasting code into editor...");
 	for (filename, content) in &files {
 		// Prepend empty line - VPL panics without it
-		let content = format!("\n{}", content);
+		let content = format!("\n{content}");
 		if let Err(e) = set_vpl_file_content(page, filename, &content).await {
-			elog!("Failed to set content for {}: {}", filename, e);
+			elog!("Failed to set content for {filename}: {e}");
 		}
 	}
 
 	log!("Saving code...");
-	tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 	if !click_vpl_button(page, "save").await? {
 		bail!("Could not find Save button - aborting");
 	}
-	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
+	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 	log!("Running evaluation...");
 	if !click_vpl_button(page, "evaluate").await? {
 		bail!("Could not find Evaluate button - aborting");
 	}
-
 	log!("Waiting for evaluation results...");
 	tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
