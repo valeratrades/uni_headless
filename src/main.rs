@@ -16,7 +16,7 @@ use uni_headless::{
 };
 use v_utils::{
 	clientside, elog,
-	io::{ConfirmAllResult, confirm_all},
+	io::{ConfirmAllResult, confirm, confirm_all},
 	log, xdg_state_dir,
 };
 
@@ -232,6 +232,11 @@ async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool) -> Result<()
 	// Wait for editor to load
 	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
+	// Save the editor page HTML
+	if let Err(e) = save_page_html(page, "vpl_editor").await {
+		elog!("Failed to save editor page HTML: {}", e);
+	}
+
 	log!("Pasting code into editor...");
 	for (filename, content) in &files {
 		if let Err(e) = set_vpl_file_content(page, filename, content).await {
@@ -239,12 +244,16 @@ async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool) -> Result<()
 		}
 	}
 
-	log!("Saving code (Ctrl+S)...");
-	send_keyboard_shortcut(page, "s", true, false, false).await?;
+	log!("Saving code...");
+	if !click_vpl_button(page, "Save").await? {
+		elog!("Could not find Save button");
+	}
 	tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-	log!("Running evaluation (Ctrl+F11)...");
-	send_keyboard_shortcut(page, "F11", true, false, false).await?;
+	log!("Running evaluation...");
+	if !click_vpl_button(page, "Evaluate").await? {
+		elog!("Could not find Evaluate button");
+	}
 
 	log!("Waiting for evaluation results...");
 	tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -283,6 +292,48 @@ async fn click_vpl_edit_button(page: &chromiumoxide::Page) -> Result<bool> {
 	"#;
 
 	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click Edit button: {}", e))?;
+	Ok(result.value().and_then(|v| v.as_bool()).unwrap_or(false))
+}
+
+/// Click a VPL button by title (partial match)
+/// Works with VPL toolbar buttons which are <a> elements with titles like "Save (Ctrl-S)" or "Evaluate (Shift-F11)"
+async fn click_vpl_button(page: &chromiumoxide::Page, title_contains: &str) -> Result<bool> {
+	let script = format!(
+		r#"
+		(function() {{
+			const searchText = "{}".toLowerCase();
+
+			// VPL toolbar uses <a> elements with role="button" and title attributes
+			// e.g., <a id="vpl_ide_save" title="Save (Ctrl-S)" ...>
+			// e.g., <a id="vpl_ide_evaluate" title="Evaluate (Shift-F11)" ...>
+			const vplLinks = document.querySelectorAll('a[role="button"], a.ui-button, [id^="vpl_ide_"]');
+			for (const link of vplLinks) {{
+				const title = (link.getAttribute('title') || '').toLowerCase();
+				const id = (link.id || '').toLowerCase();
+				if (title.includes(searchText) || id.includes(searchText)) {{
+					link.click();
+					return true;
+				}}
+			}}
+
+			// Fallback: general buttons
+			const allButtons = document.querySelectorAll('button, input[type="button"], input[type="submit"], a.btn');
+			for (const btn of allButtons) {{
+				const title = (btn.getAttribute('title') || '').toLowerCase();
+				const text = (btn.textContent || btn.value || '').toLowerCase();
+				if (title.includes(searchText) || text.includes(searchText)) {{
+					btn.click();
+					return true;
+				}}
+			}}
+
+			return false;
+		}})()
+		"#,
+		title_contains
+	);
+
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click {} button: {}", title_contains, e))?;
 	Ok(result.value().and_then(|v| v.as_bool()).unwrap_or(false))
 }
 
@@ -353,37 +404,6 @@ async fn set_vpl_file_content(page: &chromiumoxide::Page, filename: &str, conten
 	if result.value().and_then(|v| v.as_bool()) != Some(true) {
 		return Err(eyre!("Could not find editor to set content"));
 	}
-
-	Ok(())
-}
-
-/// Send a keyboard shortcut (e.g., Ctrl+S)
-async fn send_keyboard_shortcut(page: &chromiumoxide::Page, key: &str, ctrl: bool, shift: bool, alt: bool) -> Result<()> {
-	use chromiumoxide::cdp::browser_protocol::input::{DispatchKeyEventParams, DispatchKeyEventType};
-
-	let modifiers = (if ctrl { 2 } else { 0 }) | (if shift { 8 } else { 0 }) | (if alt { 1 } else { 0 });
-
-	// Key down
-	let key_down = DispatchKeyEventParams::builder()
-		.r#type(DispatchKeyEventType::KeyDown)
-		.key(key.to_uppercase())
-		.code(format!("Key{}", key.to_uppercase()))
-		.modifiers(modifiers)
-		.build()
-		.map_err(|e| eyre!("Failed to build key down event: {:?}", e))?;
-
-	page.execute(key_down).await.map_err(|e| eyre!("Failed to send key down: {}", e))?;
-
-	// Key up
-	let key_up = DispatchKeyEventParams::builder()
-		.r#type(DispatchKeyEventType::KeyUp)
-		.key(key.to_uppercase())
-		.code(format!("Key{}", key.to_uppercase()))
-		.modifiers(modifiers)
-		.build()
-		.map_err(|e| eyre!("Failed to build key up event: {:?}", e))?;
-
-	page.execute(key_up).await.map_err(|e| eyre!("Failed to send key up: {}", e))?;
 
 	Ok(())
 }
