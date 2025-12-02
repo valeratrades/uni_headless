@@ -183,8 +183,16 @@ Respond with JSON only, no markdown, in this exact format:
 	}
 }
 
+/// Result of asking LLM for code - includes conversation for potential retries
+pub struct LlmCodeResult {
+	/// Generated files (filename -> content)
+	pub files: Vec<(String, String)>,
+	/// The conversation history (for retries with test results)
+	pub conversation: Conversation,
+}
+
 /// Ask the LLM to generate code for a VPL submission
-pub async fn ask_llm_for_code(question: &Question) -> Result<Vec<(String, String)>> {
+pub async fn ask_llm_for_code(question: &Question) -> Result<LlmCodeResult> {
 	let Question::CodeSubmission { description, required_files, .. } = question else {
 		bail!("Expected CodeSubmission question");
 	};
@@ -229,8 +237,33 @@ Make sure the code is correct and ready to submit. Do not include docstrings or 
 
 	tracing::debug!("LLM code response: {}", response.text);
 
+	// Add assistant response to conversation for potential retries
+	conv.add(Role::Assistant, &response.text);
+
 	let json_str = response.text.trim();
 	let answer: LlmCodeAnswer = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse LLM code response: {e} - raw: '{json_str}'"))?;
 
-	Ok(answer.files.into_iter().map(|f| (f.filename, f.content)).collect())
+	let files = answer.files.into_iter().map(|f| (f.filename, f.content)).collect();
+	Ok(LlmCodeResult { files, conversation: conv })
+}
+
+/// Retry code generation with test results feedback
+pub async fn retry_llm_with_test_results(mut conversation: Conversation, test_results: &str) -> Result<LlmCodeResult> {
+	// Add test results as a new user message (no additional commentary)
+	conversation.add(Role::User, test_results);
+
+	let client = LlmClient::new().model(Model::Medium).max_tokens(4096).force_json();
+
+	let response = client.conversation(&conversation).await?;
+
+	tracing::debug!("LLM retry response: {}", response.text);
+
+	// Add assistant response to conversation
+	conversation.add(Role::Assistant, &response.text);
+
+	let json_str = response.text.trim();
+	let answer: LlmCodeAnswer = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse LLM retry response: {e} - raw: '{json_str}'"))?;
+
+	let files = answer.files.into_iter().map(|f| (f.filename, f.content)).collect();
+	Ok(LlmCodeResult { files, conversation })
 }

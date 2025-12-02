@@ -12,7 +12,7 @@ use v_utils::{Percent, elog, io::confirm, log, xdg_state_dir};
 use crate::{
 	Choice, Image, Question, RequiredFile,
 	config::AppConfig,
-	llm::{LlmAnswerResult, ask_llm_for_answer, ask_llm_for_code},
+	llm::{LlmAnswerResult, ask_llm_for_answer, ask_llm_for_code, retry_llm_with_test_results},
 };
 
 /// Handle a VPL (Virtual Programming Lab) code submission page
@@ -63,15 +63,15 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig)
 
 	// Ask LLM to generate code
 	log!("Asking LLM to generate code solution...");
-	let files = match ask_llm_for_code(&question).await {
-		Ok(files) => {
+	let code_result = match ask_llm_for_code(&question).await {
+		Ok(result) => {
 			eprintln!("\nGenerated code:");
-			for (filename, content) in &files {
+			for (filename, content) in &result.files {
 				eprintln!("\n=== {} ===", filename);
 				eprintln!("{}", content);
 			}
 			eprintln!();
-			files
+			result
 		}
 		Err(e) => {
 			elog!("Failed to generate code: {}", e);
@@ -79,7 +79,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig)
 		}
 	};
 
-	if files.is_empty() {
+	if code_result.files.is_empty() {
 		elog!("No code files generated");
 		return Ok(false);
 	}
@@ -90,7 +90,11 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig)
 		return Ok(false);
 	}
 
-	// Navigate to the Edit page
+	// Track conversation for retries
+	let mut conversation = code_result.conversation;
+	let mut files = code_result.files;
+
+	// Navigate to the Edit page (only on first attempt)
 	log!("Navigating to VPL editor...");
 	if !click_vpl_edit_button(page).await? {
 		elog!("Could not find Edit button on VPL page");
@@ -98,60 +102,110 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig)
 	}
 
 	// Wait for editor page to fully load
-	page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for navigation: {}", e))?;
+	page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for navigation: {e}"))?;
 	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
-	// Save the editor page HTML
-	if let Err(e) = save_page_html(page, "vpl_editor").await {
-		elog!("Failed to save editor page HTML: {e}");
-	}
-
-	log!("Pasting code into editor...");
-	tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-	for (filename, content) in &files {
-		// Prepend empty line - VPL panics without it
-		let content = format!("\n{content}");
-		if let Err(e) = set_vpl_file_content(page, filename, &content).await {
-			elog!("Failed to set content for {filename}: {e}");
+	// Retry loop for test failures
+	const MAX_RETRIES: u32 = 3;
+	for attempt in 0..=MAX_RETRIES {
+		if attempt > 0 {
+			log!("Retry attempt {}/{}", attempt, MAX_RETRIES);
 		}
-	}
-	tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-	log!("Saving code...");
-	tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-	if !click_vpl_button(page, "save").await? {
-		bail!("Could not find Save button - aborting");
-	}
+		// Save the editor page HTML
+		if let Err(e) = save_page_html(page, "vpl_editor").await {
+			elog!("Failed to save editor page HTML: {e}");
+		}
 
-	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-	log!("Running evaluation...");
-	if !click_vpl_button(page, "evaluate").await? {
-		bail!("Could not find Evaluate button - aborting");
-	}
-	log!("Waiting for evaluation results...");
-	tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+		log!("Pasting code into editor...");
+		tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+		for (filename, content) in &files {
+			// Prepend empty line - VPL panics without it
+			let content = format!("\n{content}");
+			if let Err(e) = set_vpl_file_content(page, filename, &content).await {
+				elog!("Failed to set content for {filename}: {e}");
+			}
+		}
+		tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-	let eval_result = parse_vpl_evaluation_result(page).await?;
-	if let Some(result) = eval_result {
-		eprintln!("\n=== Evaluation Result ===");
-		eprintln!("{}", result);
-	} else {
-		log!("No evaluation result found (may still be running)");
-	}
+		log!("Saving code...");
+		tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+		if !click_vpl_button(page, "save").await? {
+			bail!("Could not find Save button - aborting");
+		}
 
-	// Parse proposed grade
-	let grade = parse_vpl_proposed_grade(page).await?;
-	if let Some(grade) = grade {
-		eprintln!("Proposed grade: {grade}");
-		if grade >= 1.0 {
-			log!("Full marks! Evaluation successful.");
-			return Ok(true);
+		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+		log!("Running evaluation...");
+		if !click_vpl_button(page, "evaluate").await? {
+			bail!("Could not find Evaluate button - aborting");
+		}
+		log!("Waiting for evaluation results...");
+		tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+
+		let eval_result = parse_vpl_evaluation_result(page).await?;
+		if let Some(result) = &eval_result {
+			eprintln!("\n=== Evaluation Result ===");
+			eprintln!("{result}");
 		} else {
-			bail!("Evaluation failed: got {} (expected 100%)", grade * Percent(1.0));
+			log!("No evaluation result found (may still be running)");
 		}
-	} else {
-		bail!("Could not find proposed grade in evaluation results");
+
+		// Parse proposed grade
+		let grade = parse_vpl_proposed_grade(page).await?;
+		if let Some(grade) = grade {
+			eprintln!("Proposed grade: {grade}");
+			if grade >= 1.0 {
+				log!("Full marks! Evaluation successful.");
+				return Ok(true);
+			}
+
+			// Not perfect - try to get test results and retry
+			if attempt < MAX_RETRIES {
+				let test_results = parse_vpl_test_results(page).await?;
+				if let Some(test_results) = test_results {
+					eprintln!("\n=== Test Failure Details ===");
+					eprintln!("{}", test_results);
+
+					// Ask LLM to fix the code with test results
+					log!("Asking LLM to fix the code based on test results...");
+					match retry_llm_with_test_results(conversation, &test_results).await {
+						Ok(result) => {
+							eprintln!("\nRegenerated code:");
+							for (filename, content) in &result.files {
+								eprintln!("\n=== {filename} ===");
+								eprintln!("{content}");
+							}
+							eprintln!();
+
+							// Ask for confirmation before pasting regenerated code
+							if !config.auto_submit && !confirm("Paste regenerated code into editor?").await {
+								log!("Cancelled by user");
+								bail!("Evaluation failed: got {} (expected 100%)", grade * Percent(1.0));
+							}
+
+							// Update for next iteration
+							conversation = result.conversation;
+							files = result.files;
+							continue;
+						}
+						Err(e) => {
+							elog!("Failed to regenerate code: {}", e);
+							bail!("Evaluation failed: got {} (expected 100%)", grade * Percent(1.0));
+						}
+					}
+				} else {
+					elog!("Could not parse test results for retry");
+					bail!("Evaluation failed: got {} (expected 100%)", grade * Percent(1.0));
+				}
+			} else {
+				bail!("Evaluation failed after {} retries: got {} (expected 100%)", MAX_RETRIES, grade * Percent(1.0));
+			}
+		} else {
+			bail!("Could not find proposed grade in evaluation results");
+		}
 	}
+
+	bail!("Exhausted all retry attempts");
 }
 
 /// Handle a quiz (multi-choice) page
@@ -510,6 +564,64 @@ async fn parse_vpl_evaluation_result(page: &Page) -> Result<Option<String>> {
 	"#;
 
 	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to parse evaluation result: {}", e))?;
+
+	Ok(result.value().and_then(|v| v.as_str()).map(|s| s.to_string()))
+}
+
+/// Parse test results from the VPL comments section
+/// Returns the test failure messages if found
+async fn parse_vpl_test_results(page: &Page) -> Result<Option<String>> {
+	let script = r#"
+		(function() {
+			// Find comments section by class
+			const comments = document.querySelector('.vpl_ide_accordion_c_comments');
+			if (!comments) return null;
+
+			// Get all text content, preserving structure
+			const parts = [];
+			let inTestResult = false;
+
+			function walkNode(node) {
+				if (node.nodeType === Node.TEXT_NODE) {
+					const text = node.textContent.trim();
+					if (text) {
+						// Stop at "Description" - that's where problem description starts
+						if (text.startsWith('Description')) {
+							return false;
+						}
+						parts.push(text);
+					}
+				} else if (node.nodeType === Node.ELEMENT_NODE) {
+					const tag = node.tagName.toLowerCase();
+					if (tag === 'br') {
+						parts.push('\n');
+					} else if (tag === 'b') {
+						// Bold = test header, start collecting
+						inTestResult = true;
+						parts.push('\n[TEST] ');
+						for (const child of node.childNodes) {
+							if (walkNode(child) === false) return false;
+						}
+					} else {
+						for (const child of node.childNodes) {
+							if (walkNode(child) === false) return false;
+						}
+					}
+				}
+				return true;
+			}
+
+			walkNode(comments);
+
+			// Clean up and return
+			const result = parts.join('').trim();
+			if (!result || result.length < 10) return null;
+
+			return result;
+		})()
+	"#;
+
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to parse test results: {}", e))?;
 
 	Ok(result.value().and_then(|v| v.as_str()).map(|s| s.to_string()))
 }
