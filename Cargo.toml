@@ -8,7 +8,8 @@ edition = "2024"
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
 [dependencies]
-ask_llm = { version = "^2.0.0", path = "../../ask_llm" } #ga: rm path
+ask_llm = { version = "^2.1.0", path = "../../ask_llm" } #ga: rm path
+base64 = "0.22"
 chromiumoxide = { version = "0.8", features = ["tokio-runtime"] }
 clap = { version = "4", features = ["derive"] }
 color-eyre = "^0.6.5"

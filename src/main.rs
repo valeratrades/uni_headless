@@ -7,8 +7,9 @@ use color_eyre::{
 };
 use futures::StreamExt;
 use uni_headless::{
-	Choice, Question,
+	Choice, Image, Question, RequiredFile,
 	config::{AppConfig, SettingsFlags},
+	is_vpl_url,
 };
 use v_utils::{
 	clientside, elog,
@@ -249,60 +250,193 @@ async fn main() -> Result<()> {
 
 	log!("Successfully navigated to: {:?}", final_url);
 
-	// Parse and answer questions in a loop
+	// Check if this is a VPL (code submission) page
+	if is_vpl_url(&args.target_url) {
+		log!("Detected VPL (Virtual Programming Lab) page");
+		handle_vpl_page(&page, args.ask_llm).await?;
+	} else {
+		// Parse and answer questions in a loop (quiz mode)
+		handle_quiz_page(&page, args.ask_llm, &mut config).await?;
+	}
+
+	// Keep browser open in visible mode
+	if args.visible {
+		log!("Browser is visible. Press Ctrl+C to exit...");
+		tokio::signal::ctrl_c().await?;
+	} else {
+		// In headless mode, wait a bit to ensure page is fully loaded
+		tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+		log!("Task completed successfully!");
+	}
+
+	// Clean up
+	drop(page);
+	browser.close().await.map_err(|e| color_eyre::eyre::eyre!("Failed to close browser: {}", e))?;
+	drop(browser);
+	handle.abort();
+
+	Ok(())
+}
+
+/// Handle a VPL (Virtual Programming Lab) code submission page
+async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool) -> Result<()> {
+	let question = parse_vpl_page(page).await?;
+
+	let Some(question) = question else {
+		log!("No VPL question found on this page.");
+		return Ok(());
+	};
+
+	// Display the question
+	let header = "--- Code Submission [VPL] ---";
+	tracing::info!("{}", header);
+	eprintln!("{}", header);
+
+	let text = question.question_text();
+	tracing::info!("{}", text);
+	eprintln!("{}", text);
+
+	// Display images
+	for img in question.images() {
+		if let Err(e) = display_image_chafa(page, &img.url, 60).await {
+			elog!("Failed to display image: {}", e);
+			eprintln!("  [Image: {}]", img.alt.as_deref().unwrap_or(&img.url));
+		}
+	}
+
+	// Display required files
+	let required_files = question.required_files();
+	if !required_files.is_empty() {
+		eprintln!("\nRequired files:");
+		for file in required_files {
+			if file.content.is_empty() {
+				eprintln!("  - {}", file.name);
+			} else {
+				eprintln!("  - {} (has template)", file.name);
+			}
+		}
+	}
+	eprintln!();
+
+	if !ask_llm {
+		// If not using LLM, just display the question
+		return Ok(());
+	}
+
+	// Ask LLM to generate code
+	log!("Asking LLM to generate code solution...");
+	match ask_llm_for_code(&question).await {
+		Ok(files) => {
+			eprintln!("\nGenerated code:");
+			for (filename, content) in &files {
+				eprintln!("\n=== {} ===", filename);
+				eprintln!("{}", content);
+			}
+			eprintln!();
+
+			// For now, just display the code - submission will be implemented in next phase
+			log!("Code generated. Manual submission required for now.");
+		}
+		Err(e) => {
+			elog!("Failed to generate code: {}", e);
+		}
+	}
+
+	Ok(())
+}
+
+/// Handle a quiz (multi-choice) page
+async fn handle_quiz_page(page: &chromiumoxide::Page, ask_llm: bool, config: &mut AppConfig) -> Result<()> {
 	let mut question_num = 0;
 	let mut consecutive_failures = 0;
 	const MAX_CONSECUTIVE_FAILURES: u32 = 5;
+	let mut first_page = true;
 
 	loop {
-		log!("Parsing questions from the page...");
-		let questions = parse_questions(&page).await?;
+		// Print page separator
+		let current_url = page.url().await.ok().flatten().unwrap_or_default();
+		let page_num = current_url.split("page=").nth(1).and_then(|s| s.split('&').next()).and_then(|s| s.parse::<u32>().ok());
+
+		if !first_page {
+			if let Some(num) = page_num {
+				log!("\n==================== Page {} ====================", num);
+			} else {
+				log!("\n================================================");
+			}
+		}
+		first_page = false;
+
+		let questions = parse_questions(page).await?;
 
 		if questions.is_empty() {
 			log!("No more questions found.");
 			break;
 		}
 
-		log!("Found {} question(s) on this page", questions.len());
-
-		// First, display all questions on this page
+		// Display all questions on this page
 		for (i, question) in questions.iter().enumerate() {
 			let type_marker = if question.is_multi() { "[multi]" } else { "[single]" };
-			log!("--- Question {} {} ---", question_num + i + 1, type_marker);
-			log!("Text: {}", question.question_text());
+			let header = format!("--- Question {} {} ---", question_num + i + 1, type_marker);
+			tracing::info!("{}", header);
+			eprintln!("{}", header);
+
+			let text = question.question_text();
+			tracing::info!("{}", text);
+			eprintln!("{}", text);
+
+			// Display question images
+			for img in question.images() {
+				if let Err(e) = display_image_chafa(page, &img.url, 60).await {
+					elog!("Failed to display image: {}", e);
+					eprintln!("  [Image: {}]", img.alt.as_deref().unwrap_or(&img.url));
+				}
+			}
+
 			let choices = question.choices();
 			for (j, choice) in choices.iter().enumerate() {
 				let selected_marker = if choice.selected { " [SELECTED]" } else { "" };
-				log!("  {}. {}{}", j + 1, choice.text, selected_marker);
+				let line = format!("  {}. {}{}", j + 1, choice.text, selected_marker);
+				tracing::info!("{}", line);
+				eprintln!("{}", line);
+
+				// Display choice images (smaller)
+				for img in &choice.images {
+					if let Err(e) = display_image_chafa(page, &img.url, 40).await {
+						elog!("Failed to display choice image: {}", e);
+						eprintln!("    [Image: {}]", img.alt.as_deref().unwrap_or(&img.url));
+					}
+				}
 			}
+			eprintln!(); // newline between questions
 		}
 
-		if !args.ask_llm {
+		if !ask_llm {
 			// If not using LLM, just display questions and exit
 			break;
 		}
 
 		// Collect answers for all questions on this page
 		let mut answers_to_select: Vec<(&Question, LlmAnswerResult)> = Vec::new();
+		let mut answer_logs: Vec<String> = Vec::new();
 
 		for question in &questions {
 			question_num += 1;
 
-			match ask_llm_for_answer(question).await {
+			match ask_llm_for_answer(page, question).await {
 				Ok(answer_result) => {
 					consecutive_failures = 0; // Reset on success
 
-					// Display selected answer(s)
+					// Collect answer display for later
 					let type_marker = if question.is_multi() { "[multi]" } else { "[single]" };
-					log!("Question {} {} answer:", question_num, type_marker);
+					answer_logs.push(format!("Question {} {} answer:", question_num, type_marker));
 					match &answer_result {
 						LlmAnswerResult::Single { idx, text } => {
-							log!("  Selected: {}. {}", idx + 1, text);
+							answer_logs.push(format!("  Selected: {}. {}", idx + 1, text));
 						}
 						LlmAnswerResult::Multi { indices, texts } => {
-							log!("  Selected:");
+							answer_logs.push("  Selected:".to_string());
 							for (idx, text) in indices.iter().zip(texts.iter()) {
-								log!("    {}. {}", idx + 1, text);
+								answer_logs.push(format!("    {}. {}", idx + 1, text));
 							}
 						}
 					}
@@ -324,6 +458,18 @@ async fn main() -> Result<()> {
 					// Skip this question but continue with others
 				}
 			}
+		}
+
+		// Display all answers at once with newlines around
+		if !answer_logs.is_empty() {
+			let mut output = String::from("\n");
+			for line in &answer_logs {
+				tracing::info!("{}", line);
+				output.push_str(line);
+				output.push('\n');
+			}
+			output.push('\n');
+			print!("{}", output);
 		}
 
 		if answers_to_select.is_empty() {
@@ -350,7 +496,7 @@ async fn main() -> Result<()> {
 						ConfirmAllResult::No => None, // User will submit manually
 					}
 				}
-				_ = wait_for_page_change(&page) => {
+				_ = wait_for_page_change(page) => {
 					log!("User submitted manually.");
 					Some(false) // Already submitted, don't submit again
 				}
@@ -365,17 +511,17 @@ async fn main() -> Result<()> {
 					match answer_result {
 						LlmAnswerResult::Single { idx, .. } => {
 							let choice = &choices[*idx];
-							select_answer(&page, &choice.input_name, &choice.input_value).await?;
+							select_answer(page, &choice.input_name, &choice.input_value).await?;
 						}
 						LlmAnswerResult::Multi { indices, .. } =>
 							for idx in indices {
 								let choice = &choices[*idx];
-								select_answer(&page, &choice.input_name, &choice.input_value).await?;
+								select_answer(page, &choice.input_name, &choice.input_value).await?;
 							},
 					}
 				}
 				// Submit once for all questions on this page
-				click_submit(&page).await?;
+				click_submit(page).await?;
 				log!("All {} answer(s) submitted!", answers_to_select.len());
 			}
 			Some(false) => {
@@ -384,27 +530,11 @@ async fn main() -> Result<()> {
 			None => {
 				// User said no, wait for them to submit manually
 				log!("Waiting for manual submission...");
-				wait_for_page_change(&page).await?;
+				wait_for_page_change(page).await?;
 				log!("Page changed, continuing...");
 			}
 		}
 	}
-
-	// Keep browser open in visible mode
-	if args.visible {
-		log!("Browser is visible. Press Ctrl+C to exit...");
-		tokio::signal::ctrl_c().await?;
-	} else {
-		// In headless mode, wait a bit to ensure page is fully loaded
-		tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-		log!("Task completed successfully!");
-	}
-
-	// Clean up
-	drop(page);
-	browser.close().await.map_err(|e| color_eyre::eyre::eyre!("Failed to close browser: {}", e))?;
-	drop(browser);
-	handle.abort();
 
 	Ok(())
 }
@@ -413,6 +543,23 @@ async fn main() -> Result<()> {
 async fn parse_questions(page: &chromiumoxide::Page) -> Result<Vec<Question>> {
 	let parse_script = r#"
 		(function() {
+			// Helper function to extract images from an element
+			function extractImages(element) {
+				if (!element) return [];
+				const images = [];
+				const imgElements = element.querySelectorAll('img');
+				for (const img of imgElements) {
+					const url = img.src || '';
+					if (url) {
+						images.push({
+							url: url,
+							alt: img.alt || null
+						});
+					}
+				}
+				return images;
+			}
+
 			// Helper function to extract text with LaTeX preserved
 			// MathJax renders math and keeps source in annotation or data attributes
 			function extractTextWithLatex(element) {
@@ -506,6 +653,7 @@ async fn parse_questions(page: &chromiumoxide::Page) -> Result<Vec<Question>> {
 				// Get the question text from .qtext
 				const qtextEl = formulation.querySelector('.qtext');
 				const questionText = extractTextWithLatex(qtextEl);
+				const questionImages = extractImages(qtextEl);
 
 				// Find all answer options
 				const answerDiv = formulation.querySelector('.answer');
@@ -523,12 +671,14 @@ async fn parse_questions(page: &chromiumoxide::Page) -> Result<Vec<Question>> {
 					for (const radio of radioInputs) {
 						const labelEl = radio.closest('div')?.querySelector('label, .ml-1, .flex-fill');
 						const labelText = extractTextWithLatex(labelEl);
+						const choiceImages = extractImages(labelEl);
 
 						choices.push({
 							input_name: radio.name || '',
 							input_value: radio.value || '',
 							text: labelText,
-							selected: radio.checked
+							selected: radio.checked,
+							images: choiceImages
 						});
 					}
 				} else if (checkboxInputs.length > 0) {
@@ -536,12 +686,14 @@ async fn parse_questions(page: &chromiumoxide::Page) -> Result<Vec<Question>> {
 					for (const checkbox of checkboxInputs) {
 						const labelEl = checkbox.closest('div')?.querySelector('label, .ml-1, .flex-fill');
 						const labelText = extractTextWithLatex(labelEl);
+						const choiceImages = extractImages(labelEl);
 
 						choices.push({
 							input_name: checkbox.name || '',
 							input_value: checkbox.value || '',
 							text: labelText,
-							selected: checkbox.checked
+							selected: checkbox.checked,
+							images: choiceImages
 						});
 					}
 				}
@@ -550,7 +702,8 @@ async fn parse_questions(page: &chromiumoxide::Page) -> Result<Vec<Question>> {
 					questions.push({
 						type: questionType,
 						question_text: questionText,
-						choices: choices
+						choices: choices,
+						images: questionImages
 					});
 				}
 			}
@@ -572,21 +725,49 @@ async fn parse_questions(page: &chromiumoxide::Page) -> Result<Vec<Question>> {
 		let question_text = item["question_text"].as_str().unwrap_or("").to_string();
 		let question_type = item["type"].as_str().unwrap_or("SingleChoice");
 		let choices_json = item["choices"].as_array();
+		let images_json = item["images"].as_array();
+
+		// Parse question images
+		let images: Vec<Image> = images_json
+			.map(|arr| {
+				arr.iter()
+					.map(|img| Image {
+						url: img["url"].as_str().unwrap_or("").to_string(),
+						alt: img["alt"].as_str().map(|s| s.to_string()),
+					})
+					.collect()
+			})
+			.unwrap_or_default();
 
 		if let Some(choices_arr) = choices_json {
 			let choices: Vec<Choice> = choices_arr
 				.iter()
-				.map(|c| Choice {
-					input_name: c["input_name"].as_str().unwrap_or("").to_string(),
-					input_value: c["input_value"].as_str().unwrap_or("").to_string(),
-					text: c["text"].as_str().unwrap_or("").to_string(),
-					selected: c["selected"].as_bool().unwrap_or(false),
+				.map(|c| {
+					let choice_images: Vec<Image> = c["images"]
+						.as_array()
+						.map(|arr| {
+							arr.iter()
+								.map(|img| Image {
+									url: img["url"].as_str().unwrap_or("").to_string(),
+									alt: img["alt"].as_str().map(|s| s.to_string()),
+								})
+								.collect()
+						})
+						.unwrap_or_default();
+
+					Choice {
+						input_name: c["input_name"].as_str().unwrap_or("").to_string(),
+						input_value: c["input_value"].as_str().unwrap_or("").to_string(),
+						text: c["text"].as_str().unwrap_or("").to_string(),
+						selected: c["selected"].as_bool().unwrap_or(false),
+						images: choice_images,
+					}
 				})
 				.collect();
 
 			let question = match question_type {
-				"MultiChoice" => Question::MultiChoice { question_text, choices },
-				_ => Question::SingleChoice { question_text, choices },
+				"MultiChoice" => Question::MultiChoice { question_text, choices, images },
+				_ => Question::SingleChoice { question_text, choices, images },
 			};
 			questions.push(question);
 		}
@@ -615,8 +796,47 @@ pub enum LlmAnswerResult {
 	Multi { indices: Vec<usize>, texts: Vec<String> },
 }
 
+/// Fetch an image via the browser and return its base64 data and media type
+async fn fetch_image_as_base64(page: &chromiumoxide::Page, url: &str) -> Result<(String, String)> {
+	let fetch_script = format!(
+		r#"
+		(async function() {{
+			try {{
+				const response = await fetch("{}");
+				if (!response.ok) return null;
+				const blob = await response.blob();
+				const mediaType = blob.type || 'image/png';
+				return new Promise((resolve) => {{
+					const reader = new FileReader();
+					reader.onloadend = () => {{
+						// reader.result is "data:image/png;base64,XXXX..."
+						const base64 = reader.result.split(',')[1];
+						resolve(JSON.stringify({{base64: base64, mediaType: mediaType}}));
+					}};
+					reader.readAsDataURL(blob);
+				}});
+			}} catch (e) {{
+				return null;
+			}}
+		}})()
+		"#,
+		url
+	);
+
+	let result = page.evaluate(fetch_script).await.map_err(|e| eyre!("Failed to fetch image: {}", e))?;
+
+	let json_str = result.value().and_then(|v| v.as_str()).ok_or_else(|| eyre!("Failed to fetch image: browser returned null"))?;
+
+	let parsed: serde_json::Value = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse image data: {}", e))?;
+
+	let base64 = parsed["base64"].as_str().ok_or_else(|| eyre!("Missing base64 data"))?.to_string();
+	let media_type = parsed["mediaType"].as_str().unwrap_or("image/png").to_string();
+
+	Ok((base64, media_type))
+}
+
 /// Ask the LLM to answer a question
-async fn ask_llm_for_answer(question: &Question) -> Result<LlmAnswerResult> {
+async fn ask_llm_for_answer(page: &chromiumoxide::Page, question: &Question) -> Result<LlmAnswerResult> {
 	let question_text = question.question_text();
 	let choices = question.choices();
 
@@ -657,10 +877,37 @@ Respond with JSON only, no markdown, in this exact format:
 		)
 	};
 
+	// Build client and attach images
+	let mut client = LlmClient::new().model(Model::Medium).max_tokens(max_tokens).force_json();
+
+	// Attach question images
+	for img in question.images() {
+		match fetch_image_as_base64(page, &img.url).await {
+			Ok((base64, media_type)) => {
+				client = client.append_file(base64, media_type);
+			}
+			Err(e) => {
+				tracing::warn!("Failed to fetch image for LLM: {}", e);
+			}
+		}
+	}
+
+	// Attach choice images
+	for choice in choices {
+		for img in &choice.images {
+			match fetch_image_as_base64(page, &img.url).await {
+				Ok((base64, media_type)) => {
+					client = client.append_file(base64, media_type);
+				}
+				Err(e) => {
+					tracing::warn!("Failed to fetch choice image for LLM: {}", e);
+				}
+			}
+		}
+	}
+
 	let mut conv = Conversation::new();
 	conv.add(Role::User, prompt);
-
-	let client = LlmClient::new().model(Model::Medium).max_tokens(max_tokens).force_json();
 
 	let response = client.conversation(&conv).await?;
 
@@ -759,6 +1006,76 @@ async fn click_submit(page: &chromiumoxide::Page) -> Result<()> {
 	Ok(())
 }
 
+/// Display an image in terminal using chafa
+/// Uses the browser to fetch the image (to preserve session cookies), then renders with chafa
+async fn display_image_chafa(page: &chromiumoxide::Page, url: &str, max_cols: u32) -> Result<()> {
+	use std::process::Stdio;
+
+	use tokio::process::Command;
+
+	// Use browser's fetch to get image as base64 (preserves cookies/session)
+	let fetch_script = format!(
+		r#"
+		(async function() {{
+			try {{
+				const response = await fetch("{}");
+				if (!response.ok) return null;
+				const blob = await response.blob();
+				return new Promise((resolve) => {{
+					const reader = new FileReader();
+					reader.onloadend = () => resolve(reader.result);
+					reader.readAsDataURL(blob);
+				}});
+			}} catch (e) {{
+				return null;
+			}}
+		}})()
+		"#,
+		url
+	);
+
+	let result = page.evaluate(fetch_script).await.map_err(|e| eyre!("Failed to fetch image via browser: {}", e))?;
+
+	let data_url = result.value().and_then(|v| v.as_str()).ok_or_else(|| eyre!("Failed to fetch image: browser returned null"))?;
+
+	// Parse data URL: "data:image/png;base64,XXXX..."
+	let base64_data = data_url.split(",").nth(1).ok_or_else(|| eyre!("Invalid data URL format"))?;
+
+	// Decode base64
+	use base64::Engine;
+	let bytes = base64::engine::general_purpose::STANDARD
+		.decode(base64_data)
+		.map_err(|e| eyre!("Failed to decode base64: {}", e))?;
+
+	// Create temp file
+	let temp_path = format!("/tmp/quiz_img_{}.tmp", std::process::id());
+	tokio::fs::write(&temp_path, &bytes).await.map_err(|e| eyre!("Failed to write temp file: {}", e))?;
+
+	// Run chafa with size constraint
+	let output = Command::new("chafa")
+		.arg("--size")
+		.arg(format!("{}x", max_cols))
+		.arg(&temp_path)
+		.stdout(Stdio::piped())
+		.stderr(Stdio::piped())
+		.output()
+		.await
+		.map_err(|e| eyre!("Failed to run chafa: {}", e))?;
+
+	// Clean up temp file
+	let _ = tokio::fs::remove_file(&temp_path).await;
+
+	if output.status.success() {
+		// Print the chafa output directly
+		print!("{}", String::from_utf8_lossy(&output.stdout));
+	} else {
+		let stderr = String::from_utf8_lossy(&output.stderr);
+		return Err(eyre!("chafa failed: {}", stderr));
+	}
+
+	Ok(())
+}
+
 /// Wait for the page URL to change (indicating form submission)
 async fn wait_for_page_change(page: &chromiumoxide::Page) -> Result<()> {
 	let initial_url = page.url().await.map_err(|e| color_eyre::eyre::eyre!("Failed to get URL: {}", e))?;
@@ -774,4 +1091,260 @@ async fn wait_for_page_change(page: &chromiumoxide::Page) -> Result<()> {
 			return Ok(());
 		}
 	}
+}
+
+/// Parse a VPL (Virtual Programming Lab) page to extract the code submission question
+async fn parse_vpl_page(page: &chromiumoxide::Page) -> Result<Option<Question>> {
+	let parse_script = r#"
+		(function() {
+			// Helper function to extract images from an element
+			function extractImages(element) {
+				if (!element) return [];
+				const images = [];
+				const imgElements = element.querySelectorAll('img');
+				for (const img of imgElements) {
+					const url = img.src || '';
+					if (url) {
+						images.push({
+							url: url,
+							alt: img.alt || null
+						});
+					}
+				}
+				return images;
+			}
+
+			// Helper function to extract text with HTML preserved for code blocks
+			function extractDescription(element) {
+				if (!element) return '';
+
+				// Clone to avoid modifying DOM
+				const clone = element.cloneNode(true);
+
+				// Convert <pre> and <code> tags to preserve formatting
+				const codeBlocks = clone.querySelectorAll('pre, code');
+				for (const block of codeBlocks) {
+					// Keep code content as-is with markers
+					const content = block.textContent;
+					const marker = block.tagName === 'PRE' ? '\n```\n' : '`';
+					block.replaceWith(document.createTextNode(marker + content + marker));
+				}
+
+				// Convert <br> to newlines
+				const brs = clone.querySelectorAll('br');
+				for (const br of brs) {
+					br.replaceWith(document.createTextNode('\n'));
+				}
+
+				// Convert <p> to double newlines
+				const ps = clone.querySelectorAll('p');
+				for (const p of ps) {
+					const text = p.textContent;
+					p.replaceWith(document.createTextNode('\n\n' + text));
+				}
+
+				// Convert lists
+				const lis = clone.querySelectorAll('li');
+				for (const li of lis) {
+					const text = li.textContent;
+					li.replaceWith(document.createTextNode('\n• ' + text));
+				}
+
+				return clone.textContent.trim();
+			}
+
+			// Get module ID from URL
+			const urlParams = new URLSearchParams(window.location.search);
+			const moduleId = urlParams.get('id') || '';
+
+			// Find the description - VPL uses various containers
+			let description = '';
+			let images = [];
+
+			// Try different description selectors used by VPL
+			const descSelectors = [
+				'.box.generalbox .no-overflow',
+				'.box.generalbox',
+				'#intro',
+				'.activity-description',
+				'[role="main"] .box'
+			];
+
+			for (const selector of descSelectors) {
+				const descEl = document.querySelector(selector);
+				if (descEl && descEl.textContent.trim().length > 50) {
+					description = extractDescription(descEl);
+					images = extractImages(descEl);
+					break;
+				}
+			}
+
+			// If no description found, try the full page content area
+			if (!description) {
+				const mainContent = document.querySelector('[role="main"]');
+				if (mainContent) {
+					description = extractDescription(mainContent);
+					images = extractImages(mainContent);
+				}
+			}
+
+			// Find required files section
+			const requiredFiles = [];
+
+			// Look for "Requested files" or "Required files" section
+			const headers = document.querySelectorAll('h3, h4, .card-header, legend');
+			for (const header of headers) {
+				const text = header.textContent.toLowerCase();
+				if (text.includes('requested') || text.includes('required') || text.includes('fichiers')) {
+					// Find the associated file list
+					let container = header.nextElementSibling || header.parentElement;
+					if (container) {
+						// Look for file items - could be in a list or table
+						const fileItems = container.querySelectorAll('li, tr, .file-item, span[title]');
+						for (const item of fileItems) {
+							const fileName = item.textContent.trim();
+							if (fileName && fileName.includes('.')) {
+								requiredFiles.push({
+									name: fileName,
+									content: ''
+								});
+							}
+						}
+					}
+					break;
+				}
+			}
+
+			// Also check for files in the VPL file manager area
+			const fileManagerFiles = document.querySelectorAll('.vpl_ide_file, .vpl-file-name, [data-filename]');
+			for (const file of fileManagerFiles) {
+				const fileName = file.getAttribute('data-filename') || file.textContent.trim();
+				if (fileName && !requiredFiles.find(f => f.name === fileName)) {
+					requiredFiles.push({
+						name: fileName,
+						content: ''
+					});
+				}
+			}
+
+			if (!description && requiredFiles.length === 0) {
+				return null;
+			}
+
+			return JSON.stringify({
+				type: 'CodeSubmission',
+				description: description,
+				required_files: requiredFiles,
+				module_id: moduleId,
+				images: images
+			});
+		})()
+	"#;
+
+	let result = page.evaluate(parse_script).await.map_err(|e| eyre!("Failed to parse VPL page: {}", e))?;
+
+	let json_str = match result.value().and_then(|v| v.as_str()) {
+		Some(s) => s,
+		None => return Ok(None),
+	};
+
+	let parsed: serde_json::Value = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse VPL JSON: {}", e))?;
+
+	let description = parsed["description"].as_str().unwrap_or("").to_string();
+	let module_id = parsed["module_id"].as_str().unwrap_or("").to_string();
+
+	let images: Vec<Image> = parsed["images"]
+		.as_array()
+		.map(|arr| {
+			arr.iter()
+				.map(|img| Image {
+					url: img["url"].as_str().unwrap_or("").to_string(),
+					alt: img["alt"].as_str().map(|s| s.to_string()),
+				})
+				.collect()
+		})
+		.unwrap_or_default();
+
+	let required_files: Vec<RequiredFile> = parsed["required_files"]
+		.as_array()
+		.map(|arr| {
+			arr.iter()
+				.map(|f| RequiredFile {
+					name: f["name"].as_str().unwrap_or("").to_string(),
+					content: f["content"].as_str().unwrap_or("").to_string(),
+				})
+				.collect()
+		})
+		.unwrap_or_default();
+
+	Ok(Some(Question::CodeSubmission {
+		description,
+		required_files,
+		module_id,
+		images,
+	}))
+}
+
+/// LLM response for code submission questions
+#[derive(Debug, serde::Deserialize)]
+struct LlmCodeAnswer {
+	files: Vec<LlmCodeFile>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LlmCodeFile {
+	filename: String,
+	content: String,
+}
+
+/// Ask the LLM to generate code for a VPL submission
+async fn ask_llm_for_code(question: &Question) -> Result<Vec<(String, String)>> {
+	let Question::CodeSubmission { description, required_files, .. } = question else {
+		bail!("Expected CodeSubmission question");
+	};
+
+	let files_list = if required_files.is_empty() {
+		"No specific files required - determine appropriate filename(s) based on the problem.".to_string()
+	} else {
+		required_files
+			.iter()
+			.map(|f| {
+				if f.content.is_empty() {
+					format!("- {}", f.name)
+				} else {
+					format!("- {} (template provided):\n```\n{}\n```", f.name, f.content)
+				}
+			})
+			.collect::<Vec<_>>()
+			.join("\n")
+	};
+
+	let prompt = format!(
+		r#"You are solving a programming assignment. Write the complete solution code.
+
+Problem Description:
+{description}
+
+Required Files:
+{files_list}
+
+IMPORTANT: Respond with JSON only, no markdown, in this exact format:
+{{"files": [{{"filename": "<filename>", "content": "<complete file content>"}}]}}
+
+Make sure the code is complete, correct, and ready to submit. Include all necessary imports/includes."#
+	);
+
+	let mut conv = Conversation::new();
+	conv.add(Role::User, prompt);
+
+	let client = LlmClient::new().model(Model::Medium).max_tokens(4096).force_json();
+
+	let response = client.conversation(&conv).await?;
+
+	tracing::debug!("LLM code response: {}", response.text);
+
+	let json_str = response.text.trim();
+	let answer: LlmCodeAnswer = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse LLM code response: {} - raw: '{}'", e, json_str))?;
+
+	Ok(answer.files.into_iter().map(|f| (f.filename, f.content)).collect())
 }
