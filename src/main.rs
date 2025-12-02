@@ -66,19 +66,14 @@ async fn main() -> Result<()> {
 		}
 	});
 
-	// Create a new page
-	let page = browser.new_page("about:blank").await.map_err(|e| eyre!("Failed to create new page: {}", e))?;
-
-	log!("Navigating to target URL...");
-
 	// Determine which site we're working with based on target URL
 	let is_caseine = args.target_url.contains("caseine.org");
 	let base_url = if is_caseine { "https://moodle.caseine.org/" } else { "https://moodle2025.uca.fr/" };
 
 	log!("Detected site: {}", if is_caseine { "caseine.org" } else { "moodle2025.uca.fr" });
 
-	// Navigate to the site
-	page.goto(base_url).await.map_err(|e| eyre!("Failed to navigate: {}", e))?;
+	// Create a new page and navigate directly to the login site
+	let page = browser.new_page(base_url).await.map_err(|e| eyre!("Failed to create new page: {}", e))?;
 
 	// Wait for page to load
 	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -268,98 +263,129 @@ async fn main() -> Result<()> {
 			break;
 		}
 
-		for question in &questions {
-			question_num += 1;
+		log!("Found {} question(s) on this page", questions.len());
+
+		// First, display all questions on this page
+		for (i, question) in questions.iter().enumerate() {
 			let type_marker = if question.is_multi() { "[multi]" } else { "[single]" };
-			log!("--- Question {} {} ---", question_num, type_marker);
+			log!("--- Question {} {} ---", question_num + i + 1, type_marker);
 			log!("Text: {}", question.question_text());
 			let choices = question.choices();
 			for (j, choice) in choices.iter().enumerate() {
 				let selected_marker = if choice.selected { " [SELECTED]" } else { "" };
 				log!("  {}. {}{}", j + 1, choice.text, selected_marker);
 			}
+		}
 
-			if args.ask_llm {
-				match ask_llm_for_answer(question).await {
-					Ok(answer_result) => {
-						consecutive_failures = 0; // Reset on success
+		if !args.ask_llm {
+			// If not using LLM, just display questions and exit
+			break;
+		}
 
-						// Display selected answer(s)
-						match &answer_result {
-							LlmAnswerResult::Single { idx, text } => {
-								log!("Selected: {}. {}", idx + 1, text);
-							}
-							LlmAnswerResult::Multi { indices, texts } => {
-								log!("Selected:");
-								for (idx, text) in indices.iter().zip(texts.iter()) {
-									log!("  {}. {}", idx + 1, text);
-								}
-							}
+		// Collect answers for all questions on this page
+		let mut answers_to_select: Vec<(&Question, LlmAnswerResult)> = Vec::new();
+
+		for question in &questions {
+			question_num += 1;
+
+			match ask_llm_for_answer(question).await {
+				Ok(answer_result) => {
+					consecutive_failures = 0; // Reset on success
+
+					// Display selected answer(s)
+					let type_marker = if question.is_multi() { "[multi]" } else { "[single]" };
+					log!("Question {} {} answer:", question_num, type_marker);
+					match &answer_result {
+						LlmAnswerResult::Single { idx, text } => {
+							log!("  Selected: {}. {}", idx + 1, text);
 						}
-
-						let should_submit = if config.auto_submit {
-							Some(true)
-						} else {
-							// Race between user confirmation and detecting manual submission
-							tokio::select! {
-								biased;
-								result = confirm_all("Submit this answer?") => {
-									match result {
-										ConfirmAllResult::Yes => Some(true),
-										ConfirmAllResult::All => {
-											// SAFETY: single-threaded, no concurrent reads
-											unsafe { config.set_auto_submit(true) };
-											Some(true)
-										}
-										ConfirmAllResult::No => None, // User will submit manually
-									}
-								}
-								_ = wait_for_page_change(&page) => {
-									log!("User submitted manually.");
-									Some(false) // Already submitted, don't submit again
-								}
-							}
-						};
-
-						match should_submit {
-							Some(true) => {
-								let choices = question.choices();
-								match &answer_result {
-									LlmAnswerResult::Single { idx, .. } => {
-										let choice = &choices[*idx];
-										select_answer(&page, &choice.input_name, &choice.input_value).await?;
-									}
-									LlmAnswerResult::Multi { indices, .. } =>
-										for idx in indices {
-											let choice = &choices[*idx];
-											select_answer(&page, &choice.input_name, &choice.input_value).await?;
-										},
-								}
-								click_submit(&page).await?;
-								log!("Answer submitted!");
-							}
-							Some(false) => {
-								// Already submitted by user, continue to next question
-							}
-							None => {
-								// User said no, wait for them to submit manually
-								log!("Waiting for manual submission...");
-								wait_for_page_change(&page).await?;
-								log!("Page changed, continuing...");
+						LlmAnswerResult::Multi { indices, texts } => {
+							log!("  Selected:");
+							for (idx, text) in indices.iter().zip(texts.iter()) {
+								log!("    {}. {}", idx + 1, text);
 							}
 						}
 					}
-					Err(e) => {
-						consecutive_failures += 1;
-						elog!("Failed to get LLM answer: {} ({}/{})", e, consecutive_failures, MAX_CONSECUTIVE_FAILURES);
-						if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-							bail!("Exceeded {} consecutive LLM failures", MAX_CONSECUTIVE_FAILURES);
+
+					answers_to_select.push((question, answer_result));
+				}
+				Err(e) => {
+					consecutive_failures += 1;
+					elog!(
+						"Failed to get LLM answer for question {}: {} ({}/{})",
+						question_num,
+						e,
+						consecutive_failures,
+						MAX_CONSECUTIVE_FAILURES
+					);
+					if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+						bail!("Exceeded {} consecutive LLM failures", MAX_CONSECUTIVE_FAILURES);
+					}
+					// Skip this question but continue with others
+				}
+			}
+		}
+
+		if answers_to_select.is_empty() {
+			log!("No answers to submit on this page.");
+			break;
+		}
+
+		// Ask for confirmation once for all answers on this page
+		let should_submit = if config.auto_submit {
+			Some(true)
+		} else {
+			// Race between user confirmation and detecting manual submission
+			let confirm_msg = format!("Submit {} answer(s)?", answers_to_select.len());
+			tokio::select! {
+				biased;
+				result = confirm_all(&confirm_msg) => {
+					match result {
+						ConfirmAllResult::Yes => Some(true),
+						ConfirmAllResult::All => {
+							// SAFETY: single-threaded, no concurrent reads
+							unsafe { config.set_auto_submit(true) };
+							Some(true)
 						}
-						continue;
+						ConfirmAllResult::No => None, // User will submit manually
 					}
 				}
-			} else {
-				break;
+				_ = wait_for_page_change(&page) => {
+					log!("User submitted manually.");
+					Some(false) // Already submitted, don't submit again
+				}
+			}
+		};
+
+		match should_submit {
+			Some(true) => {
+				// Select all answers on this page
+				for (question, answer_result) in &answers_to_select {
+					let choices = question.choices();
+					match answer_result {
+						LlmAnswerResult::Single { idx, .. } => {
+							let choice = &choices[*idx];
+							select_answer(&page, &choice.input_name, &choice.input_value).await?;
+						}
+						LlmAnswerResult::Multi { indices, .. } =>
+							for idx in indices {
+								let choice = &choices[*idx];
+								select_answer(&page, &choice.input_name, &choice.input_value).await?;
+							},
+					}
+				}
+				// Submit once for all questions on this page
+				click_submit(&page).await?;
+				log!("All {} answer(s) submitted!", answers_to_select.len());
+			}
+			Some(false) => {
+				// Already submitted by user, continue to next page
+			}
+			None => {
+				// User said no, wait for them to submit manually
+				log!("Waiting for manual submission...");
+				wait_for_page_change(&page).await?;
+				log!("Page changed, continuing...");
 			}
 		}
 	}
@@ -387,6 +413,90 @@ async fn main() -> Result<()> {
 async fn parse_questions(page: &chromiumoxide::Page) -> Result<Vec<Question>> {
 	let parse_script = r#"
 		(function() {
+			// Helper function to extract text with LaTeX preserved
+			// MathJax renders math and keeps source in annotation or data attributes
+			function extractTextWithLatex(element) {
+				if (!element) return '';
+
+				// Clone the element to avoid modifying the DOM
+				const clone = element.cloneNode(true);
+
+				// Find all MathJax containers and replace with LaTeX source
+				// MathJax 3.x uses mjx-container with data attributes
+				const mjxContainers = clone.querySelectorAll('mjx-container');
+				for (const container of mjxContainers) {
+					// Try to get LaTeX from various sources
+					let latex = null;
+
+					// Check for assistive MathML with annotation
+					const annotation = container.querySelector('annotation[encoding="application/x-tex"]');
+					if (annotation) {
+						latex = annotation.textContent;
+					}
+
+					// Check data attribute (sometimes used)
+					if (!latex && container.dataset.latex) {
+						latex = container.dataset.latex;
+					}
+
+					// Check aria-label which often contains the LaTeX
+					if (!latex && container.getAttribute('aria-label')) {
+						// aria-label might have the formatted version, not ideal but better than nothing
+					}
+
+					// Look for the original script tag with math
+					const mathScript = container.querySelector('script[type="math/tex"]');
+					if (!latex && mathScript) {
+						latex = mathScript.textContent;
+					}
+
+					if (latex) {
+						// Replace the container with the LaTeX wrapped in \( \) or \[ \]
+						const isDisplay = container.getAttribute('display') === 'true' ||
+						                  container.classList.contains('MJXc-display');
+						const wrapper = isDisplay ? ['\\[', '\\]'] : ['\\(', '\\)'];
+						const textNode = document.createTextNode(wrapper[0] + latex + wrapper[1]);
+						container.replaceWith(textNode);
+					} else {
+						// Fallback: just remove the MathJax visual elements to avoid duplication
+						// Keep just the accessible text
+						const accessibleText = container.querySelector('.MJX_Assistive_MathML, mjx-assistive-mml');
+						if (accessibleText) {
+							container.replaceWith(document.createTextNode(accessibleText.textContent || ''));
+						}
+					}
+				}
+
+				// Also handle MathJax 2.x style (span.MathJax)
+				const mj2Spans = clone.querySelectorAll('.MathJax, .MathJax_Preview, .MathJax_Display');
+				for (const span of mj2Spans) {
+					// Try to find the script sibling with the source
+					const script = span.nextElementSibling;
+					if (script && script.tagName === 'SCRIPT' && script.type && script.type.includes('math/tex')) {
+						const latex = script.textContent;
+						const isDisplay = script.type.includes('mode=display');
+						const wrapper = isDisplay ? ['\\[', '\\]'] : ['\\(', '\\)'];
+						span.replaceWith(document.createTextNode(wrapper[0] + latex + wrapper[1]));
+						script.remove();
+					} else {
+						// Just remove the preview/duplicate
+						span.remove();
+					}
+				}
+
+				// Remove any remaining script tags with math
+				const mathScripts = clone.querySelectorAll('script[type*="math/tex"]');
+				for (const script of mathScripts) {
+					const latex = script.textContent;
+					const isDisplay = script.type.includes('mode=display');
+					const wrapper = isDisplay ? ['\\[', '\\]'] : ['\\(', '\\)'];
+					script.replaceWith(document.createTextNode(wrapper[0] + latex + wrapper[1]));
+				}
+
+				// Get the text content, normalize whitespace
+				return clone.textContent.replace(/\s+/g, ' ').trim();
+			}
+
 			const questions = [];
 
 			// Find all question formulations
@@ -395,7 +505,7 @@ async fn parse_questions(page: &chromiumoxide::Page) -> Result<Vec<Question>> {
 			for (const formulation of formulations) {
 				// Get the question text from .qtext
 				const qtextEl = formulation.querySelector('.qtext');
-				const questionText = qtextEl ? qtextEl.innerText.trim() : '';
+				const questionText = extractTextWithLatex(qtextEl);
 
 				// Find all answer options
 				const answerDiv = formulation.querySelector('.answer');
@@ -412,7 +522,7 @@ async fn parse_questions(page: &chromiumoxide::Page) -> Result<Vec<Question>> {
 					questionType = 'SingleChoice';
 					for (const radio of radioInputs) {
 						const labelEl = radio.closest('div')?.querySelector('label, .ml-1, .flex-fill');
-						const labelText = labelEl ? labelEl.innerText.trim() : '';
+						const labelText = extractTextWithLatex(labelEl);
 
 						choices.push({
 							input_name: radio.name || '',
@@ -425,7 +535,7 @@ async fn parse_questions(page: &chromiumoxide::Page) -> Result<Vec<Question>> {
 					questionType = 'MultiChoice';
 					for (const checkbox of checkboxInputs) {
 						const labelEl = checkbox.closest('div')?.querySelector('label, .ml-1, .flex-fill');
-						const labelText = labelEl ? labelEl.innerText.trim() : '';
+						const labelText = extractTextWithLatex(labelEl);
 
 						choices.push({
 							input_name: checkbox.name || '',
