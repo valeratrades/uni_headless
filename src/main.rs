@@ -1,7 +1,10 @@
 use ask_llm::{Client as LlmClient, Conversation, Model, Role};
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use clap::Parser;
-use color_eyre::{Result, eyre::bail};
+use color_eyre::{
+	Result,
+	eyre::{bail, eyre},
+};
 use futures::StreamExt;
 use uni_headless::{
 	Choice, Question,
@@ -46,15 +49,15 @@ async fn main() -> Result<()> {
 		BrowserConfig::builder()
 			.with_head() // Visible browser with UI
 			.build()
-			.map_err(|e| color_eyre::eyre::eyre!("Failed to build browser config: {}", e))?
+			.map_err(|e| eyre!("Failed to build browser config: {e}"))?
 	} else {
 		BrowserConfig::builder()
 			.build() // Headless mode
-			.map_err(|e| color_eyre::eyre::eyre!("Failed to build browser config: {}", e))?
+			.map_err(|e| eyre!("Failed to build browser config: {e}"))?
 	};
 
 	// Launch browser
-	let (mut browser, mut handler) = Browser::launch(browser_config).await.map_err(|e| color_eyre::eyre::eyre!("Failed to launch browser: {}", e))?;
+	let (mut browser, mut handler) = Browser::launch(browser_config).await.map_err(|e| eyre!("Failed to launch browser: {}", e))?;
 
 	// Spawn a task to handle browser events (suppress errors as they're mostly noise)
 	let handle = tokio::spawn(async move {
@@ -64,7 +67,7 @@ async fn main() -> Result<()> {
 	});
 
 	// Create a new page
-	let page = browser.new_page("about:blank").await.map_err(|e| color_eyre::eyre::eyre!("Failed to create new page: {}", e))?;
+	let page = browser.new_page("about:blank").await.map_err(|e| eyre!("Failed to create new page: {}", e))?;
 
 	log!("Navigating to target URL...");
 
@@ -75,7 +78,7 @@ async fn main() -> Result<()> {
 	log!("Detected site: {}", if is_caseine { "caseine.org" } else { "moodle2025.uca.fr" });
 
 	// Navigate to the site
-	page.goto(base_url).await.map_err(|e| color_eyre::eyre::eyre!("Failed to navigate: {}", e))?;
+	page.goto(base_url).await.map_err(|e| eyre!("Failed to navigate: {}", e))?;
 
 	// Wait for page to load
 	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -88,7 +91,7 @@ async fn main() -> Result<()> {
 	if login_button_exists {
 		log!("Clicking login button...");
 		if let Ok(login_btn) = page.find_element("a[href*='login']").await {
-			login_btn.click().await.map_err(|e| color_eyre::eyre::eyre!("Failed to click login button: {}", e))?;
+			login_btn.click().await.map_err(|e| eyre!("Failed to click login button: {}", e))?;
 			tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 		}
 	}
@@ -118,7 +121,7 @@ async fn main() -> Result<()> {
 		"#;
 
 		log!("Clicking 'Autres comptes universitaires'...");
-		page.evaluate(oauth_script).await.map_err(|e| color_eyre::eyre::eyre!("Failed to click OAuth button: {}", e))?;
+		page.evaluate(oauth_script).await.map_err(|e| eyre!("Failed to click OAuth button: {e}"))?;
 
 		tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
