@@ -193,7 +193,6 @@ async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool) -> Result<()
 	// Wait for editor to load
 	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
-	// Submit the code files
 	log!("Pasting code into editor...");
 	for (filename, content) in &files {
 		if let Err(e) = set_vpl_file_content(page, filename, content).await {
@@ -201,16 +200,13 @@ async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool) -> Result<()
 		}
 	}
 
-	// Save with Ctrl+S
 	log!("Saving code (Ctrl+S)...");
 	send_keyboard_shortcut(page, "s", true, false, false).await?;
 	tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-	// Evaluate with F11
-	log!("Running evaluation (F11)...");
-	send_key(page, "F11").await?;
+	log!("Running evaluation (Ctrl+F11)...");
+	send_keyboard_shortcut(page, "F11", true, false, false).await?;
 
-	// Wait for evaluation to complete and parse results
 	log!("Waiting for evaluation results...");
 	tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 

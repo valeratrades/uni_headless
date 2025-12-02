@@ -35,13 +35,19 @@ pub async fn login_and_navigate(page: &Page, site: Site, target_url: &str, confi
 /// Login flow for caseine.org
 /// Goes directly to target URL, handles enrollment redirect, then OAuth login
 async fn login_caseine(page: &Page, target_url: &str, config: &AppConfig) -> Result<()> {
-	// Already navigated to target URL, check where we landed
 	let current_url = page.url().await.ok().flatten().unwrap_or_default();
+
+	// Check if already logged in (landed on target or VPL page)
+	if current_url.contains("/mod/vpl/") && !current_url.contains("login") && !current_url.contains("enrol") {
+		log!("Already logged in, at target page");
+		return Ok(());
+	}
 
 	// Step 1: If on enrollment page, click Continue
 	if current_url.contains("enrol/index.php") {
 		log!("On enrollment page, clicking Continue...");
-		let continue_script = r#"
+		page.evaluate(
+			r#"
 			(function() {
 				const buttons = document.querySelectorAll('button, input[type="submit"], a.btn');
 				for (const btn of buttons) {
@@ -53,60 +59,59 @@ async fn login_caseine(page: &Page, target_url: &str, config: &AppConfig) -> Res
 				}
 				return false;
 			})()
-		"#;
-		page.evaluate(continue_script).await.map_err(|e| eyre!("Failed to click Continue: {}", e))?;
+		"#,
+		)
+		.await
+		.map_err(|e| eyre!("Failed to click Continue: {}", e))?;
 		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 	}
 
-	// Step 2: If on login page, click the third button (a.btn:nth-child(3))
+	// Step 2: If on login page, click the federation login button
 	let current_url = page.url().await.ok().flatten().unwrap_or_default();
 	if current_url.contains("moodle.caseine.org/login/index.php") {
 		log!("On login page, clicking login button...");
-		let login_script = r#"
-			(function() {
-				const btn = document.querySelector('a.btn:nth-child(3)');
-				if (btn) {
-					btn.click();
-					return true;
-				}
-				return false;
-			})()
-		"#;
-		page.evaluate(login_script).await.map_err(|e| eyre!("Failed to click login button: {}", e))?;
+		page.evaluate(r#"document.querySelector('a.btn:nth-child(3)').click()"#)
+			.await
+			.map_err(|e| eyre!("Failed to click login button: {}", e))?;
 		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 	}
 
-	// Step 3: Select university from dropdown
-	log!("Selecting university from dropdown...");
-	select_university_from_dropdown(page).await?;
+	// Step 3: Select university from dropdown (if on federation page)
+	let current_url = page.url().await.ok().flatten().unwrap_or_default();
+	if current_url.contains("discovery.renater.fr") || current_url.contains("wayf") {
+		log!("Selecting university from dropdown...");
+		select_university_from_dropdown(page).await?;
+	}
 
-	// Step 4: Fill UCA CAS login form (same credentials as moodle)
-	log!("Filling CAS login form...");
-	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-	fill_and_submit_login_form(page, config).await?;
-	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+	// Step 4: Fill UCA CAS login form (if on CAS page)
+	let current_url = page.url().await.ok().flatten().unwrap_or_default();
+	if current_url.contains("ent.uca.fr/cas") {
+		log!("Filling CAS login form...");
+		tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+		fill_and_submit_login_form(page, config).await?;
+		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+	}
 
-	// Step 5: Click "Accept" button on SAML consent page
-	log!("Waiting for SAML consent page...");
-	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-	log!("Clicking Accept button...");
-	let result = page
-		.evaluate(
+	// Step 5: Click "Accept" button on SAML consent page (if present)
+	let current_url = page.url().await.ok().flatten().unwrap_or_default();
+	if current_url.contains("idp.uca.fr") {
+		log!("On SAML consent page, clicking Accept...");
+		tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+		page.evaluate(
 			r#"
-		(function() {
-			const btn = document.querySelector('input[name="_eventId_proceed"]');
-			if (btn) {
-				btn.click();
-				return 'clicked accept';
-			}
-			return 'no accept button found';
-		})()
-	"#,
+			(function() {
+				const btn = document.querySelector('input[name="_eventId_proceed"]');
+				if (btn) btn.click();
+			})()
+		"#,
 		)
 		.await
-		.map_err(|e| eyre!("Failed to click Accept: {}", e))?;
-	log!("Accept result: {:?}", result.value());
-	tokio::time::sleep(tokio::time::Duration::from_secs(600)).await;
+		.ok();
+		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+	}
+
+	log!("Login complete, now at: {}", page.url().await.ok().flatten().unwrap_or_default());
+	let _ = target_url; // Caseine redirects back automatically
 
 	Ok(())
 }
