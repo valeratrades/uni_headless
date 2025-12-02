@@ -34,7 +34,7 @@ pub async fn login_and_navigate(page: &Page, site: Site, target_url: &str, confi
 
 /// Login flow for caseine.org
 /// Goes directly to target URL, handles enrollment redirect, then OAuth login
-async fn login_caseine(page: &Page, _target_url: &str, _config: &AppConfig) -> Result<()> {
+async fn login_caseine(page: &Page, target_url: &str, config: &AppConfig) -> Result<()> {
 	// Already navigated to target URL, check where we landed
 	let current_url = page.url().await.ok().flatten().unwrap_or_default();
 
@@ -80,8 +80,32 @@ async fn login_caseine(page: &Page, _target_url: &str, _config: &AppConfig) -> R
 	log!("Selecting university from dropdown...");
 	select_university_from_dropdown(page).await?;
 
-	// TODO: continue login flow
-	log!("Pausing after clicking Select...");
+	// Step 4: Fill UCA CAS login form (same credentials as moodle)
+	log!("Filling CAS login form...");
+	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+	fill_and_submit_login_form(page, config).await?;
+	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+	// Step 5: Click "Accept" button on SAML consent page
+	log!("Waiting for SAML consent page...");
+	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+	log!("Clicking Accept button...");
+	let result = page
+		.evaluate(
+			r#"
+		(function() {
+			const btn = document.querySelector('input[name="_eventId_proceed"]');
+			if (btn) {
+				btn.click();
+				return 'clicked accept';
+			}
+			return 'no accept button found';
+		})()
+	"#,
+		)
+		.await
+		.map_err(|e| eyre!("Failed to click Accept: {}", e))?;
+	log!("Accept result: {:?}", result.value());
 	tokio::time::sleep(tokio::time::Duration::from_secs(600)).await;
 
 	Ok(())
