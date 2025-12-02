@@ -84,11 +84,10 @@ checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
 
 [[package]]
 name = "ask_llm"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5d033b069fe4e5e3c4a4e095932d80f079f86ac1bea21fdceeed9bc3c43826e"
+version = "2.0.0"
 dependencies = [
  "bytes",
+ "clap",
  "color-eyre",
  "derive-new",
  "derive_more",
@@ -2579,9 +2578,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "v_utils"
-version = "2.11.0"
+version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2248cebbc26aed925d6b11a394686a997d7a15765447c3786f6a4cab68f13635"
+checksum = "a76c680a4b764de15a985e28d68ca53942b3e4e5f6ee4b9c8e54fe8368c37096"
 dependencies = [
  "config",
  "const_format",
@@ -2608,9 +2607,9 @@ dependencies = [
 
 [[package]]
 name = "v_utils_macros"
-version = "2.7.0"
+version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05d63e840f54d77f2a0396f60f0aa370bd079ce392074909b0bdafdef382702f"
+checksum = "6aa82190d07c77bf0077109e34408c8b98797befb4ecf7c2d82b1f784ecf4a65"
 dependencies = [
  "eyre",
  "heck 0.5.0",

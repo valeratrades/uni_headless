@@ -1,7 +1,7 @@
-use ask_llm::{Conversation, Model, Role};
+use ask_llm::{Client as LlmClient, Conversation, Model, Role};
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use clap::Parser;
-use color_eyre::Result;
+use color_eyre::{Result, eyre::bail};
 use futures::StreamExt;
 use uni_headless::{
 	Choice, Question,
@@ -253,6 +253,9 @@ async fn main() -> Result<()> {
 
 	// Parse and answer questions in a loop
 	let mut question_num = 0;
+	let mut consecutive_failures = 0;
+	const MAX_CONSECUTIVE_FAILURES: u32 = 5;
+
 	loop {
 		log!("Parsing questions from the page...");
 		let questions = parse_questions(&page).await?;
@@ -276,6 +279,8 @@ async fn main() -> Result<()> {
 			if args.ask_llm {
 				match ask_llm_for_answer(question).await {
 					Ok(answer_result) => {
+						consecutive_failures = 0; // Reset on success
+
 						// Display selected answer(s)
 						match &answer_result {
 							LlmAnswerResult::Single { idx, text } => {
@@ -342,8 +347,12 @@ async fn main() -> Result<()> {
 						}
 					}
 					Err(e) => {
-						elog!("Failed to get LLM answer: {}", e);
-						break;
+						consecutive_failures += 1;
+						elog!("Failed to get LLM answer: {} ({}/{})", e, consecutive_failures, MAX_CONSECUTIVE_FAILURES);
+						if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+							bail!("Exceeded {} consecutive LLM failures", MAX_CONSECUTIVE_FAILURES);
+						}
+						continue;
 					}
 				}
 			} else {
@@ -538,17 +547,16 @@ Respond with JSON only, no markdown, in this exact format:
 	let mut conv = Conversation::new();
 	conv.add(Role::User, prompt);
 
-	let response = ask_llm::conversation(&conv, Model::Medium, Some(max_tokens), None).await?;
+	let client = LlmClient::new().model(Model::Medium).max_tokens(max_tokens).force_json();
+
+	let response = client.conversation(&conv).await?;
 
 	tracing::debug!("LLM raw response: {}", response.text);
 
-	// Strip markdown code blocks if present
 	let json_str = response.text.trim();
-	let json_str = json_str.strip_prefix("```json").or_else(|| json_str.strip_prefix("```")).unwrap_or(json_str);
-	let json_str = json_str.strip_suffix("```").unwrap_or(json_str).trim();
 
 	if question.is_multi() {
-		let answer: LlmMultiAnswer = serde_json::from_str(json_str).map_err(|e| color_eyre::eyre::eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, response.text))?;
+		let answer: LlmMultiAnswer = serde_json::from_str(json_str).map_err(|e| color_eyre::eyre::eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, json_str))?;
 
 		// Validate all indices
 		for &num in &answer.response_numbers {
@@ -560,7 +568,7 @@ Respond with JSON only, no markdown, in this exact format:
 		let indices: Vec<usize> = answer.response_numbers.iter().map(|n| n - 1).collect();
 		Ok(LlmAnswerResult::Multi { indices, texts: answer.responses })
 	} else {
-		let answer: LlmSingleAnswer = serde_json::from_str(json_str).map_err(|e| color_eyre::eyre::eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, response.text))?;
+		let answer: LlmSingleAnswer = serde_json::from_str(json_str).map_err(|e| color_eyre::eyre::eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, json_str))?;
 
 		if answer.response_number == 0 || answer.response_number > choices.len() {
 			return Err(color_eyre::eyre::eyre!(
