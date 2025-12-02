@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use clap::Parser;
 use color_eyre::{
@@ -15,7 +17,7 @@ use uni_headless::{
 use v_utils::{
 	clientside, elog,
 	io::{ConfirmAllResult, confirm_all},
-	log,
+	log, xdg_state_dir,
 };
 
 #[derive(Debug, Parser)]
@@ -33,6 +35,10 @@ struct Args {
 	#[arg(short, long)]
 	ask_llm: bool,
 
+	/// Debug mode: interpret target_url as path to local HTML file (skips browser)
+	#[arg(long)]
+	debug_from_html: bool,
+
 	#[command(flatten)]
 	settings: SettingsFlags,
 }
@@ -45,6 +51,16 @@ async fn main() -> Result<()> {
 
 	log!("Starting Moodle login automation...");
 	log!("Visible mode: {}", args.visible);
+
+	// Clean up old HTML logs on startup (unless in debug mode)
+	if !args.debug_from_html {
+		let html_dir = xdg_state_dir!("persist_htmls");
+		if html_dir.exists() {
+			if let Err(e) = std::fs::remove_dir_all(&html_dir) {
+				elog!("Failed to clean HTML logs: {}", e);
+			}
+		}
+	}
 
 	// Configure browser based on visibility flag
 	let browser_config = if args.visible {
@@ -68,27 +84,50 @@ async fn main() -> Result<()> {
 		}
 	});
 
-	// Determine which site we're working with
-	let site = Site::detect(&args.target_url);
-	log!("Detected site: {}", site.name());
+	// Debug mode: open local HTML file directly, skip login
+	let page = if args.debug_from_html {
+		let file_url = format!("file://{}", args.target_url);
+		log!("Debug mode: opening local file {}", file_url);
+		let page = browser.new_page(&file_url).await.map_err(|e| eyre!("Failed to open file: {}", e))?;
+		tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+		page
+	} else {
+		// Determine which site we're working with
+		let site = Site::detect(&args.target_url);
+		log!("Detected site: {}", site.name());
 
-	// Create page - for caseine go directly to target, for UCA go to base
-	let start_url = match site {
-		Site::Caseine => args.target_url.clone(),
-		Site::UcaMoodle => "https://moodle2025.uca.fr/".to_string(),
+		// Create page - for caseine go directly to target, for UCA go to base
+		let start_url = match site {
+			Site::Caseine => args.target_url.clone(),
+			Site::UcaMoodle => "https://moodle2025.uca.fr/".to_string(),
+		};
+
+		let page = browser.new_page(&start_url).await.map_err(|e| eyre!("Failed to create new page: {}", e))?;
+		tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+		// Perform site-specific login and navigate to target
+		login_and_navigate(&page, site, &args.target_url, &config).await?;
+		page
 	};
-
-	let page = browser.new_page(&start_url).await.map_err(|e| eyre!("Failed to create new page: {}", e))?;
-	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-	// Perform site-specific login and navigate to target
-	login_and_navigate(&page, site, &args.target_url, &config).await?;
 
 	let final_url = page.url().await.map_err(|e| eyre!("Failed to get final URL: {}", e))?;
 	log!("Successfully navigated to: {:?}", final_url);
 
+	// Save the page HTML for debugging
+	let url_label = final_url.as_deref().unwrap_or("unknown").replace("https://", "").replace("http://", "");
+	if let Err(e) = save_page_html(&page, &url_label).await {
+		elog!("Failed to save page HTML: {}", e);
+	}
+
 	// Check if this is a VPL (code submission) page
-	if is_vpl_url(&args.target_url) {
+	// In debug mode, check the file path; otherwise check the URL
+	let is_vpl = if args.debug_from_html {
+		args.target_url.contains("vpl") || args.target_url.contains("VPL")
+	} else {
+		is_vpl_url(&args.target_url)
+	};
+
+	if is_vpl {
 		log!("Detected VPL (Virtual Programming Lab) page");
 		handle_vpl_page(&page, args.ask_llm).await?;
 	} else {
@@ -341,33 +380,6 @@ async fn send_keyboard_shortcut(page: &chromiumoxide::Page, key: &str, ctrl: boo
 		.key(key.to_uppercase())
 		.code(format!("Key{}", key.to_uppercase()))
 		.modifiers(modifiers)
-		.build()
-		.map_err(|e| eyre!("Failed to build key up event: {:?}", e))?;
-
-	page.execute(key_up).await.map_err(|e| eyre!("Failed to send key up: {}", e))?;
-
-	Ok(())
-}
-
-/// Send a function key (F1-F12)
-async fn send_key(page: &chromiumoxide::Page, key: &str) -> Result<()> {
-	use chromiumoxide::cdp::browser_protocol::input::{DispatchKeyEventParams, DispatchKeyEventType};
-
-	// Key down
-	let key_down = DispatchKeyEventParams::builder()
-		.r#type(DispatchKeyEventType::KeyDown)
-		.key(key)
-		.code(key)
-		.build()
-		.map_err(|e| eyre!("Failed to build key down event: {:?}", e))?;
-
-	page.execute(key_down).await.map_err(|e| eyre!("Failed to send key down: {}", e))?;
-
-	// Key up
-	let key_up = DispatchKeyEventParams::builder()
-		.r#type(DispatchKeyEventType::KeyUp)
-		.key(key)
-		.code(key)
 		.build()
 		.map_err(|e| eyre!("Failed to build key up event: {:?}", e))?;
 
@@ -1023,116 +1035,147 @@ async fn parse_vpl_page(page: &chromiumoxide::Page) -> Result<Option<Question>> 
 				return images;
 			}
 
-			// Helper function to extract text with HTML preserved for code blocks
-			function extractDescription(element) {
-				if (!element) return '';
-
-				// Clone to avoid modifying DOM
-				const clone = element.cloneNode(true);
-
-				// Convert <pre> and <code> tags to preserve formatting
-				const codeBlocks = clone.querySelectorAll('pre, code');
-				for (const block of codeBlocks) {
-					// Keep code content as-is with markers
-					const content = block.textContent;
-					const marker = block.tagName === 'PRE' ? '\n```\n' : '`';
-					block.replaceWith(document.createTextNode(marker + content + marker));
-				}
-
-				// Convert <br> to newlines
-				const brs = clone.querySelectorAll('br');
-				for (const br of brs) {
-					br.replaceWith(document.createTextNode('\n'));
-				}
-
-				// Convert <p> to double newlines
-				const ps = clone.querySelectorAll('p');
-				for (const p of ps) {
-					const text = p.textContent;
-					p.replaceWith(document.createTextNode('\n\n' + text));
-				}
-
-				// Convert lists
-				const lis = clone.querySelectorAll('li');
-				for (const li of lis) {
-					const text = li.textContent;
-					li.replaceWith(document.createTextNode('\n• ' + text));
-				}
-
-				return clone.textContent.trim();
-			}
-
 			// Get module ID from URL
 			const urlParams = new URLSearchParams(window.location.search);
 			const moduleId = urlParams.get('id') || '';
 
-			// Find the description - VPL uses various containers
 			let description = '';
 			let images = [];
-
-			// Try different description selectors used by VPL
-			const descSelectors = [
-				'.box.generalbox .no-overflow',
-				'.box.generalbox',
-				'#intro',
-				'.activity-description',
-				'[role="main"] .box'
-			];
-
-			for (const selector of descSelectors) {
-				const descEl = document.querySelector(selector);
-				if (descEl && descEl.textContent.trim().length > 50) {
-					description = extractDescription(descEl);
-					images = extractImages(descEl);
-					break;
-				}
-			}
-
-			// If no description found, try the full page content area
-			if (!description) {
-				const mainContent = document.querySelector('[role="main"]');
-				if (mainContent) {
-					description = extractDescription(mainContent);
-					images = extractImages(mainContent);
-				}
-			}
-
-			// Find required files section
 			const requiredFiles = [];
 
-			// Look for "Requested files" or "Required files" section
-			const headers = document.querySelectorAll('h3, h4, .card-header, legend');
-			for (const header of headers) {
-				const text = header.textContent.toLowerCase();
-				if (text.includes('requested') || text.includes('required') || text.includes('fichiers')) {
-					// Find the associated file list
-					let container = header.nextElementSibling || header.parentElement;
-					if (container) {
-						// Look for file items - could be in a list or table
-						const fileItems = container.querySelectorAll('li, tr, .file-item, span[title]');
-						for (const item of fileItems) {
-							const fileName = item.textContent.trim();
-							if (fileName && fileName.includes('.')) {
-								requiredFiles.push({
-									name: fileName,
-									content: ''
-								});
+			// === DESCRIPTION EXTRACTION ===
+			// Caseine VPL: The description is in a <div class="no-overflow"> element
+			// The correct div is the one whose FIRST CHILD is a <p> containing the exercise text
+			// Not the outer container that has "Work state summary" floating inside
+			const noOverflowDivs = document.querySelectorAll('.no-overflow');
+			for (const div of noOverflowDivs) {
+				// Get the first child element
+				const firstChild = div.firstElementChild;
+				if (!firstChild || firstChild.tagName.toLowerCase() !== 'p') {
+					continue;
+				}
+
+				// The first child must be a <p> with substantial content (not empty, not just links)
+				const firstPText = firstChild.textContent.trim();
+				if (firstPText.length < 50) {
+					continue;
+				}
+
+				// Check if this paragraph contains exercise description text
+				if (!firstPText.includes('exercice') && !firstPText.includes('fonction') &&
+				    !firstPText.includes('dictionnaire') && !firstPText.includes('Ecrire')) {
+					continue;
+				}
+
+				// This is our description div
+				const text = div.textContent || '';
+				if (text.includes('Dans cet exercice') || text.includes('Ecrire une fonction')) {
+					// Clone and clean up
+					const clone = div.cloneNode(true);
+
+					// Remove script, style, and ACE editor elements
+					const toRemove = clone.querySelectorAll('script, style, .ace_editor, pre[id^="codefile"]');
+					for (const el of toRemove) {
+						el.remove();
+					}
+
+					// Build description preserving structure
+					let desc = '';
+					const walk = (node) => {
+						if (node.nodeType === Node.TEXT_NODE) {
+							desc += node.textContent;
+						} else if (node.nodeType === Node.ELEMENT_NODE) {
+							const tag = node.tagName.toLowerCase();
+							if (tag === 'p') {
+								desc += '\n\n';
+								for (const child of node.childNodes) walk(child);
+							} else if (tag === 'br') {
+								desc += '\n';
+							} else if (tag === 'li') {
+								desc += '\n• ';
+								for (const child of node.childNodes) walk(child);
+							} else if (tag === 'ol' || tag === 'ul') {
+								for (const child of node.childNodes) walk(child);
+							} else if (tag === 'span') {
+								// Check for monospace font (code)
+								const style = node.getAttribute('style') || '';
+								if (style.includes('courier') || style.includes('monospace')) {
+									desc += '`' + node.textContent + '`';
+								} else {
+									for (const child of node.childNodes) walk(child);
+								}
+							} else if (tag === 'em' || tag === 'i') {
+								desc += '_';
+								for (const child of node.childNodes) walk(child);
+								desc += '_';
+							} else if (tag === 'strong' || tag === 'b') {
+								desc += '**';
+								for (const child of node.childNodes) walk(child);
+								desc += '**';
+							} else {
+								for (const child of node.childNodes) walk(child);
 							}
 						}
-					}
+					};
+
+					for (const child of clone.childNodes) walk(child);
+					description = desc.trim().replace(/\n{3,}/g, '\n\n');
+					images = extractImages(div);
 					break;
 				}
 			}
 
-			// Also check for files in the VPL file manager area
-			const fileManagerFiles = document.querySelectorAll('.vpl_ide_file, .vpl-file-name, [data-filename]');
-			for (const file of fileManagerFiles) {
-				const fileName = file.getAttribute('data-filename') || file.textContent.trim();
-				if (fileName && !requiredFiles.find(f => f.name === fileName)) {
-					requiredFiles.push({
-						name: fileName,
-						content: ''
-					});
+			// === REQUIRED FILES EXTRACTION ===
+			// Caseine VPL: Files are listed after <h2>Required files</h2>
+			// Each file has <h4 id="fileid1">student.py</h4> followed by <pre id="codefileid1" class="ace_editor">
+			const h4Elements = document.querySelectorAll('h4[id^="fileid"]');
+			for (const h4 of h4Elements) {
+				const fileName = h4.textContent.trim();
+				if (!fileName) continue;
+
+				// Find the corresponding pre element with ACE editor content
+				const preId = 'code' + h4.id;
+				const preElement = document.getElementById(preId);
+
+				let fileContent = '';
+				if (preElement) {
+					// ACE editor stores code in .ace_line divs within .ace_text-layer
+					const aceLines = preElement.querySelectorAll('.ace_line');
+					if (aceLines.length > 0) {
+						const lines = [];
+						for (const line of aceLines) {
+							lines.push(line.textContent);
+						}
+						fileContent = lines.join('\n');
+					}
+				}
+
+				requiredFiles.push({
+					name: fileName,
+					content: fileContent.trim()
+				});
+			}
+
+			// Fallback: if no files found via h4, try the old method
+			if (requiredFiles.length === 0) {
+				const allPres = document.querySelectorAll('pre.ace_editor');
+				for (const pre of allPres) {
+					const aceLines = pre.querySelectorAll('.ace_line');
+					if (aceLines.length > 0) {
+						const lines = [];
+						for (const line of aceLines) {
+							lines.push(line.textContent);
+						}
+						const content = lines.join('\n');
+						// Check if it looks like Python
+						if (content.includes('# Ecrivez') || content.includes('if __name__')) {
+							requiredFiles.push({
+								name: 'student.py',
+								content: content.trim()
+							});
+							break;
+						}
+					}
 				}
 			}
 
@@ -1192,4 +1235,29 @@ async fn parse_vpl_page(page: &chromiumoxide::Page) -> Result<Option<Question>> 
 		module_id,
 		images,
 	}))
+}
+
+/// Save the current page's HTML to disk for debugging
+async fn save_page_html(page: &chromiumoxide::Page, label: &str) -> Result<PathBuf> {
+	let html_dir = xdg_state_dir!("persist_htmls");
+	std::fs::create_dir_all(&html_dir).map_err(|e| eyre!("Failed to create HTML dir: {}", e))?;
+
+	// Get the page HTML
+	let html = page.evaluate("document.documentElement.outerHTML").await.map_err(|e| eyre!("Failed to get page HTML: {}", e))?;
+
+	let html_str = html.value().and_then(|v| v.as_str()).unwrap_or("<html></html>");
+
+	// Create a filename from the label and timestamp
+	let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+	// Sanitize label for filename
+	let safe_label: String = label.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+
+	let filename = format!("{}_{}.html", timestamp, safe_label);
+	let filepath = html_dir.join(&filename);
+
+	std::fs::write(&filepath, html_str).map_err(|e| eyre!("Failed to write HTML file: {}", e))?;
+
+	log!("Saved page HTML to: {}", filepath.display());
+	Ok(filepath)
 }
