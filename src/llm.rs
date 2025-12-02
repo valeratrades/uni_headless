@@ -217,7 +217,7 @@ Required Files:
 IMPORTANT: Respond with JSON only, no markdown, in this exact format:
 {{"files": [{{"filename": "<filename>", "content": "<complete file content>"}}]}}
 
-Make sure the code is complete, correct, and ready to submit. Include all necessary imports/includes."#
+Make sure the code is correct and ready to submit. Do not include docstrings or comments."#
 	);
 
 	let mut conv = Conversation::new();
@@ -230,7 +230,7 @@ Make sure the code is complete, correct, and ready to submit. Include all necess
 	tracing::debug!("LLM code response: {}", response.text);
 
 	let json_str = response.text.trim();
-	let answer: LlmCodeAnswer = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse LLM code response: {} - raw: '{}'", e, json_str))?;
+	let answer: LlmCodeAnswer = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse LLM code response: {e} - raw: '{json_str}'"))?;
 
 	Ok(answer.files.into_iter().map(|f| (f.filename, f.content)).collect())
 }

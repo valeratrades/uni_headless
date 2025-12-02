@@ -1056,84 +1056,118 @@ async fn parse_vpl_page(page: &chromiumoxide::Page) -> Result<Option<Question>> 
 			const requiredFiles = [];
 
 			// === DESCRIPTION EXTRACTION ===
-			// Caseine VPL: The description is in a <div class="no-overflow"> element
-			// The correct div is the one whose FIRST CHILD is a <p> containing the exercise text
-			// Not the outer container that has "Work state summary" floating inside
-			const noOverflowDivs = document.querySelectorAll('.no-overflow');
-			for (const div of noOverflowDivs) {
-				// Get the first child element
-				const firstChild = div.firstElementChild;
-				if (!firstChild || firstChild.tagName.toLowerCase() !== 'p') {
-					continue;
+			// VPL description is in a .generalbox .no-overflow div (not the one with "Work state summary")
+			// Strategy: find the .no-overflow inside a .generalbox that has substantial text content
+			// and doesn't contain the "Work state summary" header
+
+			const walkAndExtract = (node) => {
+				let desc = '';
+				if (node.nodeType === Node.TEXT_NODE) {
+					desc += node.textContent;
+				} else if (node.nodeType === Node.ELEMENT_NODE) {
+					const tag = node.tagName.toLowerCase();
+					if (tag === 'p') {
+						desc += '\n\n';
+						for (const child of node.childNodes) desc += walkAndExtract(child);
+					} else if (tag === 'br') {
+						desc += '\n';
+					} else if (tag === 'li') {
+						desc += '\n• ';
+						for (const child of node.childNodes) desc += walkAndExtract(child);
+					} else if (tag === 'ol' || tag === 'ul') {
+						for (const child of node.childNodes) desc += walkAndExtract(child);
+					} else if (tag === 'code') {
+						desc += '`' + node.textContent + '`';
+					} else if (tag === 'span') {
+						const style = node.getAttribute('style') || '';
+						if (style.includes('courier') || style.includes('monospace')) {
+							desc += '`' + node.textContent + '`';
+						} else {
+							for (const child of node.childNodes) desc += walkAndExtract(child);
+						}
+					} else if (tag === 'em' || tag === 'i') {
+						desc += '_';
+						for (const child of node.childNodes) desc += walkAndExtract(child);
+						desc += '_';
+					} else if (tag === 'strong' || tag === 'b') {
+						desc += '**';
+						for (const child of node.childNodes) desc += walkAndExtract(child);
+						desc += '**';
+					} else if (tag === 'div' && node.classList.contains('editor-indent')) {
+						desc += '\n';
+						for (const child of node.childNodes) desc += walkAndExtract(child);
+					} else {
+						for (const child of node.childNodes) desc += walkAndExtract(child);
+					}
+				}
+				return desc;
+			};
+
+			// Find all .generalbox containers and look for the one with the description
+			const generalBoxes = document.querySelectorAll('.generalbox');
+			for (const box of generalBoxes) {
+				const noOverflow = box.querySelector('.no-overflow');
+				if (!noOverflow) continue;
+
+				// Skip if this contains "Work state summary" (it's the status box)
+				if (noOverflow.textContent.includes('Work state summary')) continue;
+
+				// Skip if it's mostly empty
+				const text = noOverflow.textContent.trim();
+				if (text.length < 50) continue;
+
+				// Skip if it looks like course info (contains "Responsable" or course headers)
+				if (text.includes('Responsable de la matière')) continue;
+
+				// Clone and clean up
+				const clone = noOverflow.cloneNode(true);
+				const toRemove = clone.querySelectorAll('script, style, .ace_editor, pre[id^="codefile"]');
+				for (const el of toRemove) {
+					el.remove();
 				}
 
-				// The first child must be a <p> with substantial content (not empty, not just links)
-				const firstPText = firstChild.textContent.trim();
-				if (firstPText.length < 50) {
-					continue;
-				}
+				// Extract description
+				let desc = '';
+				for (const child of clone.childNodes) desc += walkAndExtract(child);
+				desc = desc.trim().replace(/\n{3,}/g, '\n\n');
 
-				// Check if this paragraph contains exercise description text
-				if (!firstPText.includes('exercice') && !firstPText.includes('fonction') &&
-				    !firstPText.includes('dictionnaire') && !firstPText.includes('Ecrire')) {
-					continue;
+				if (desc.length > 50) {
+					description = desc;
+					images = extractImages(noOverflow);
+					break;
 				}
+			}
 
-				// This is our description div
-				const text = div.textContent || '';
-				if (text.includes('Dans cet exercice') || text.includes('Ecrire une fonction')) {
+			// Fallback: try the old method with .no-overflow directly
+			if (!description) {
+				const noOverflowDivs = document.querySelectorAll('.no-overflow');
+				for (const div of noOverflowDivs) {
+					// Skip if contains "Work state summary"
+					if (div.textContent.includes('Work state summary')) continue;
+
+					// Skip if it's mostly empty or too short
+					const text = div.textContent.trim();
+					if (text.length < 100) continue;
+
+					// Skip course info sections
+					if (text.includes('Responsable de la matière')) continue;
+
 					// Clone and clean up
 					const clone = div.cloneNode(true);
-
-					// Remove script, style, and ACE editor elements
 					const toRemove = clone.querySelectorAll('script, style, .ace_editor, pre[id^="codefile"]');
 					for (const el of toRemove) {
 						el.remove();
 					}
 
-					// Build description preserving structure
 					let desc = '';
-					const walk = (node) => {
-						if (node.nodeType === Node.TEXT_NODE) {
-							desc += node.textContent;
-						} else if (node.nodeType === Node.ELEMENT_NODE) {
-							const tag = node.tagName.toLowerCase();
-							if (tag === 'p') {
-								desc += '\n\n';
-								for (const child of node.childNodes) walk(child);
-							} else if (tag === 'br') {
-								desc += '\n';
-							} else if (tag === 'li') {
-								desc += '\n• ';
-								for (const child of node.childNodes) walk(child);
-							} else if (tag === 'ol' || tag === 'ul') {
-								for (const child of node.childNodes) walk(child);
-							} else if (tag === 'span') {
-								// Check for monospace font (code)
-								const style = node.getAttribute('style') || '';
-								if (style.includes('courier') || style.includes('monospace')) {
-									desc += '`' + node.textContent + '`';
-								} else {
-									for (const child of node.childNodes) walk(child);
-								}
-							} else if (tag === 'em' || tag === 'i') {
-								desc += '_';
-								for (const child of node.childNodes) walk(child);
-								desc += '_';
-							} else if (tag === 'strong' || tag === 'b') {
-								desc += '**';
-								for (const child of node.childNodes) walk(child);
-								desc += '**';
-							} else {
-								for (const child of node.childNodes) walk(child);
-							}
-						}
-					};
+					for (const child of clone.childNodes) desc += walkAndExtract(child);
+					desc = desc.trim().replace(/\n{3,}/g, '\n\n');
 
-					for (const child of clone.childNodes) walk(child);
-					description = desc.trim().replace(/\n{3,}/g, '\n\n');
-					images = extractImages(div);
-					break;
+					if (desc.length > 50) {
+						description = desc;
+						images = extractImages(div);
+						break;
+					}
 				}
 			}
 
