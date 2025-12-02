@@ -8,6 +8,30 @@
 [<img alt="ci warnings" src="https://img.shields.io/github/actions/workflow/status/valeratrades/uni_headless/warnings.yml?branch=master&style=for-the-badge&style=flat-square&label=warnings&labelColor=d16002" height="20">](https://github.com/valeratrades/uni_headless/actions?query=branch%3Amaster) <!--NB: Won't find it if repo is private-->
 
 Headless browser automation for Moodle quizzes with optional LLM-powered answer selection.
+<!-- markdownlint-disable -->
+<details>
+<summary>
+<h3>Installation: Windows</h3>
+</summary>
+
+### Windows Installation
+
+Download the latest Windows executable:
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/valeratrades/uni_headless/releases/download/latest-windows/uni_headless.exe" -OutFile "uni_headless.exe"
+```
+
+Or with curl (if available):
+
+```bash
+curl -LO https://github.com/valeratrades/uni_headless/releases/download/latest-windows/uni_headless.exe
+```
+
+Then move the executable to a directory in your PATH, or run it directly.
+
+</details>
+<!-- markdownlint-restore -->
 
 ## Usage
 ```sh
