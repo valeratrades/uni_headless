@@ -80,6 +80,8 @@ async fn login_caseine(page: &Page, target_url: &str, config: &AppConfig) -> Res
 	let current_url = page.url().await.ok().flatten().unwrap_or_default();
 	if current_url.contains("discovery.renater.fr") || current_url.contains("wayf") {
 		log!("Selecting university from dropdown...");
+		page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for federation page: {}", e))?;
+		tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 		select_university_from_dropdown(page).await?;
 	}
 
@@ -110,8 +112,15 @@ async fn login_caseine(page: &Page, target_url: &str, config: &AppConfig) -> Res
 		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 	}
 
-	log!("Login complete, now at: {}", page.url().await.ok().flatten().unwrap_or_default());
-	let _ = target_url; // Caseine redirects back automatically
+	let final_url = page.url().await.ok().flatten().unwrap_or_default();
+	log!("Login complete, now at: {}", final_url);
+
+	// Check we ended up at the target (compare base path, ignoring query params)
+	let target_base = target_url.split('?').next().unwrap_or(target_url);
+	let final_base = final_url.split('?').next().unwrap_or(&final_url);
+	if final_base != target_base {
+		return Err(eyre!("Login failed: expected to be at {}, but at {}", target_url, final_url));
+	}
 
 	Ok(())
 }

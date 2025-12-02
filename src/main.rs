@@ -15,7 +15,7 @@ use uni_headless::{
 	login::{Site, login_and_navigate},
 };
 use v_utils::{
-	clientside, elog,
+	Percent, clientside, elog,
 	io::{ConfirmAllResult, confirm, confirm_all},
 	log, xdg_state_dir,
 };
@@ -103,7 +103,7 @@ async fn main() -> Result<()> {
 		};
 
 		let page = browser.new_page(&start_url).await.map_err(|e| eyre!("Failed to create new page: {}", e))?;
-		tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+		page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for initial page load: {}", e))?;
 
 		// Perform site-specific login and navigate to target
 		login_and_navigate(&page, site, &args.target_url, &config).await?;
@@ -235,7 +235,8 @@ async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool, config: &mut
 		return Ok(());
 	}
 
-	// Wait for editor to load
+	// Wait for editor page to fully load
+	page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for navigation: {}", e))?;
 	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
 	// Save the editor page HTML
@@ -244,6 +245,7 @@ async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool, config: &mut
 	}
 
 	log!("Pasting code into editor...");
+	tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 	for (filename, content) in &files {
 		// Prepend empty line - VPL panics without it
 		let content = format!("\n{content}");
@@ -251,9 +253,10 @@ async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool, config: &mut
 			elog!("Failed to set content for {filename}: {e}");
 		}
 	}
+	tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
 	log!("Saving code...");
-	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+	tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 	if !click_vpl_button(page, "save").await? {
 		bail!("Could not find Save button - aborting");
 	}
@@ -272,6 +275,19 @@ async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool, config: &mut
 		eprintln!("{}", result);
 	} else {
 		log!("No evaluation result found (may still be running)");
+	}
+
+	// Parse proposed grade
+	let grade = parse_vpl_proposed_grade(page).await?;
+	if let Some(grade) = grade {
+		eprintln!("Proposed grade: {grade}");
+		if grade >= 1.0 {
+			log!("Full marks! Evaluation successful.");
+		} else {
+			bail!("Evaluation failed: got {} (expected 100%)", grade * Percent(1.0));
+		}
+	} else {
+		bail!("Could not find proposed grade in evaluation results");
 	}
 
 	Ok(())
@@ -445,6 +461,49 @@ async fn parse_vpl_evaluation_result(page: &chromiumoxide::Page) -> Result<Optio
 	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to parse evaluation result: {}", e))?;
 
 	Ok(result.value().and_then(|v| v.as_str()).map(|s| s.to_string()))
+}
+
+/// Parse the proposed grade from VPL evaluation results
+/// Looks for text like "Proposed grade: 100.00 / 100.00"
+async fn parse_vpl_proposed_grade(page: &chromiumoxide::Page) -> Result<Option<Percent>> {
+	let script = r#"
+		(function() {
+			// Find element containing "Proposed grade:"
+			const allElements = document.querySelectorAll('*');
+			for (const el of allElements) {
+				const text = el.textContent || '';
+				if (text.startsWith('Proposed grade:')) {
+					return text;
+				}
+			}
+			// Also try searching in results area
+			const results = document.querySelector('.vpl_ide_results, #vpl_results, .console-output');
+			if (results) {
+				const text = results.textContent || '';
+				const match = text.match(/Proposed grade:\s*[\d.]+\s*\/\s*[\d.]+/);
+				if (match) return match[0];
+			}
+			return null;
+		})()
+	"#;
+
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to parse proposed grade: {}", e))?;
+
+	let Some(text) = result.value().and_then(|v| v.as_str()) else {
+		return Ok(None);
+	};
+
+	// Parse "Proposed grade: X / Y"
+	let re = regex::Regex::new(r"Proposed grade:\s*([\d.]+)\s*/\s*([\d.]+)").map_err(|e| eyre!("Regex error: {}", e))?;
+	let Some(caps) = re.captures(text) else {
+		return Ok(None);
+	};
+
+	let score: f64 = caps.get(1).and_then(|m| m.as_str().parse::<f64>().ok()).unwrap_or(0.0);
+	let total: f64 = caps.get(2).and_then(|m| m.as_str().parse::<f64>().ok()).unwrap_or(1.0);
+
+	let percent = if total > 0.0 { score / total } else { 0.0 };
+	Ok(Some(Percent(percent)))
 }
 
 /// Handle a quiz (multi-choice) page
@@ -934,7 +993,7 @@ async fn click_submit(page: &chromiumoxide::Page) -> Result<()> {
 	}
 
 	// Wait for page to process submission
-	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+	page.wait_for_navigation().await.map_err(|e| color_eyre::eyre::eyre!("Failed waiting for submission: {}", e))?;
 
 	Ok(())
 }
@@ -1011,19 +1070,8 @@ async fn display_image_chafa(page: &chromiumoxide::Page, url: &str, max_cols: u3
 
 /// Wait for the page URL to change (indicating form submission)
 async fn wait_for_page_change(page: &chromiumoxide::Page) -> Result<()> {
-	let initial_url = page.url().await.map_err(|e| color_eyre::eyre::eyre!("Failed to get URL: {}", e))?;
-
-	loop {
-		tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-		let current_url = page.url().await.map_err(|e| color_eyre::eyre::eyre!("Failed to get URL: {}", e))?;
-
-		if current_url != initial_url {
-			// Wait a bit for page to fully load
-			tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-			return Ok(());
-		}
-	}
+	page.wait_for_navigation().await.map_err(|e| color_eyre::eyre::eyre!("Failed waiting for page change: {}", e))?;
+	Ok(())
 }
 
 /// Parse a VPL (Virtual Programming Lab) page to extract the code submission question
