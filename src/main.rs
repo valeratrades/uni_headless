@@ -129,7 +129,7 @@ async fn main() -> Result<()> {
 
 	if is_vpl {
 		log!("Detected VPL (Virtual Programming Lab) page");
-		handle_vpl_page(&page, args.ask_llm).await?;
+		handle_vpl_page(&page, args.ask_llm, &mut config).await?;
 	} else {
 		// Parse and answer questions in a loop (quiz mode)
 		handle_quiz_page(&page, args.ask_llm, &mut config).await?;
@@ -155,7 +155,7 @@ async fn main() -> Result<()> {
 }
 
 /// Handle a VPL (Virtual Programming Lab) code submission page
-async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool) -> Result<()> {
+async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool, config: &mut AppConfig) -> Result<()> {
 	let question = parse_vpl_page(page).await?;
 
 	let Some(question) = question else {
@@ -222,6 +222,12 @@ async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool) -> Result<()
 		return Ok(());
 	}
 
+	// Ask for confirmation before pasting (skip if auto_submit is enabled)
+	if !config.auto_submit && !confirm("Paste generated code into editor?").await {
+		log!("Cancelled by user");
+		return Ok(());
+	}
+
 	// Navigate to the Edit page
 	log!("Navigating to VPL editor...");
 	if !click_vpl_edit_button(page).await? {
@@ -239,20 +245,23 @@ async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool) -> Result<()
 
 	log!("Pasting code into editor...");
 	for (filename, content) in &files {
-		if let Err(e) = set_vpl_file_content(page, filename, content).await {
+		// Prepend empty line - VPL panics without it
+		let content = format!("\n{}", content);
+		if let Err(e) = set_vpl_file_content(page, filename, &content).await {
 			elog!("Failed to set content for {}: {}", filename, e);
 		}
 	}
 
 	log!("Saving code...");
-	if !click_vpl_button(page, "Save").await? {
-		elog!("Could not find Save button");
-	}
 	tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+	if !click_vpl_button(page, "save").await? {
+		bail!("Could not find Save button - aborting");
+	}
+	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
 	log!("Running evaluation...");
-	if !click_vpl_button(page, "Evaluate").await? {
-		elog!("Could not find Evaluate button");
+	if !click_vpl_button(page, "evaluate").await? {
+		bail!("Could not find Evaluate button - aborting");
 	}
 
 	log!("Waiting for evaluation results...");
@@ -295,46 +304,30 @@ async fn click_vpl_edit_button(page: &chromiumoxide::Page) -> Result<bool> {
 	Ok(result.value().and_then(|v| v.as_bool()).unwrap_or(false))
 }
 
-/// Click a VPL button by title (partial match)
-/// Works with VPL toolbar buttons which are <a> elements with titles like "Save (Ctrl-S)" or "Evaluate (Shift-F11)"
-async fn click_vpl_button(page: &chromiumoxide::Page, title_contains: &str) -> Result<bool> {
-	let script = format!(
-		r#"
-		(function() {{
-			const searchText = "{}".toLowerCase();
+/// Click a VPL button by action name (save, evaluate, run, debug)
+/// VPL creates buttons dynamically with IDs like vpl_ide_save, vpl_ide_evaluate
+/// Uses chromiumoxide's native click to emulate a real mouse click
+async fn click_vpl_button(page: &chromiumoxide::Page, action: &str) -> Result<bool> {
+	// First, try to find by exact ID
+	let button_id = format!("vpl_ide_{}", action);
+	let selector = format!("#{}", button_id);
 
-			// VPL toolbar uses <a> elements with role="button" and title attributes
-			// e.g., <a id="vpl_ide_save" title="Save (Ctrl-S)" ...>
-			// e.g., <a id="vpl_ide_evaluate" title="Evaluate (Shift-F11)" ...>
-			const vplLinks = document.querySelectorAll('a[role="button"], a.ui-button, [id^="vpl_ide_"]');
-			for (const link of vplLinks) {{
-				const title = (link.getAttribute('title') || '').toLowerCase();
-				const id = (link.id || '').toLowerCase();
-				if (title.includes(searchText) || id.includes(searchText)) {{
-					link.click();
-					return true;
-				}}
-			}}
+	// Try to find and click the element using CDP
+	let el = page.find_element(&selector).await;
+	if let Ok(element) = el {
+		element.click().await.map_err(|e| eyre!("Failed to click element: {}", e))?;
+		return Ok(true);
+	}
 
-			// Fallback: general buttons
-			const allButtons = document.querySelectorAll('button, input[type="button"], input[type="submit"], a.btn');
-			for (const btn of allButtons) {{
-				const title = (btn.getAttribute('title') || '').toLowerCase();
-				const text = (btn.textContent || btn.value || '').toLowerCase();
-				if (title.includes(searchText) || text.includes(searchText)) {{
-					btn.click();
-					return true;
-				}}
-			}}
+	// Fallback: search by title attribute containing the action
+	let fallback_selector = format!(r#"[id^="vpl_ide_"][title*="{}" i]"#, action);
+	let el = page.find_element(&fallback_selector).await;
+	if let Ok(element) = el {
+		element.click().await.map_err(|e| eyre!("Failed to click element: {}", e))?;
+		return Ok(true);
+	}
 
-			return false;
-		}})()
-		"#,
-		title_contains
-	);
-
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click {} button: {}", title_contains, e))?;
-	Ok(result.value().and_then(|v| v.as_bool()).unwrap_or(false))
+	Ok(false)
 }
 
 /// Set the content of a file in the VPL editor
