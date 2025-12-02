@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub mod config;
 pub mod llm;
 pub mod login;
+pub mod runner;
 
 /// Detects if a URL is a VPL (Virtual Programming Lab) activity
 pub fn is_vpl_url(url: &str) -> bool {
