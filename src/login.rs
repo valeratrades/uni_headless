@@ -1,0 +1,236 @@
+use chromiumoxide::Page;
+use color_eyre::{Result, eyre::eyre};
+use v_utils::log;
+
+use crate::config::AppConfig;
+
+/// Detected site type
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Site {
+	Caseine,
+	UcaMoodle,
+}
+
+impl Site {
+	pub fn detect(url: &str) -> Self {
+		if url.contains("caseine.org") { Site::Caseine } else { Site::UcaMoodle }
+	}
+
+	pub fn name(&self) -> &'static str {
+		match self {
+			Site::Caseine => "caseine.org",
+			Site::UcaMoodle => "moodle2025.uca.fr",
+		}
+	}
+}
+
+/// Perform login for the detected site and navigate to target URL
+pub async fn login_and_navigate(page: &Page, site: Site, target_url: &str, config: &AppConfig) -> Result<()> {
+	match site {
+		Site::Caseine => login_caseine(page, target_url, config).await,
+		Site::UcaMoodle => login_uca_moodle(page, target_url, config).await,
+	}
+}
+
+/// Login flow for caseine.org
+/// Goes directly to target URL, handles enrollment redirect, then OAuth login
+async fn login_caseine(page: &Page, _target_url: &str, _config: &AppConfig) -> Result<()> {
+	// Already navigated to target URL, check where we landed
+	let current_url = page.url().await.ok().flatten().unwrap_or_default();
+
+	// Step 1: If on enrollment page, click Continue
+	if current_url.contains("enrol/index.php") {
+		log!("On enrollment page, clicking Continue...");
+		let continue_script = r#"
+			(function() {
+				const buttons = document.querySelectorAll('button, input[type="submit"], a.btn');
+				for (const btn of buttons) {
+					const text = btn.textContent || btn.value || '';
+					if (text.trim() === 'Continue' || text.trim() === 'Continuer') {
+						btn.click();
+						return true;
+					}
+				}
+				return false;
+			})()
+		"#;
+		page.evaluate(continue_script).await.map_err(|e| eyre!("Failed to click Continue: {}", e))?;
+		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+	}
+
+	// Step 2: If on login page, click the third button (a.btn:nth-child(3))
+	let current_url = page.url().await.ok().flatten().unwrap_or_default();
+	if current_url.contains("moodle.caseine.org/login/index.php") {
+		log!("On login page, clicking login button...");
+		let login_script = r#"
+			(function() {
+				const btn = document.querySelector('a.btn:nth-child(3)');
+				if (btn) {
+					btn.click();
+					return true;
+				}
+				return false;
+			})()
+		"#;
+		page.evaluate(login_script).await.map_err(|e| eyre!("Failed to click login button: {}", e))?;
+		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+	}
+
+	// Step 3: Select university from dropdown
+	log!("Selecting university from dropdown...");
+	select_university_from_dropdown(page).await?;
+
+	// TODO: continue login flow
+	log!("Pausing after clicking Select...");
+	tokio::time::sleep(tokio::time::Duration::from_secs(600)).await;
+
+	Ok(())
+}
+
+/// Login flow for moodle2025.uca.fr
+/// Standard Moodle login with username/password
+async fn login_uca_moodle(page: &Page, target_url: &str, config: &AppConfig) -> Result<()> {
+	// Click login button if needed
+	log!("Looking for login elements...");
+	let login_script = r#"
+		(function() {
+			const loginBtn = document.querySelector('a[href*="login"]');
+			if (loginBtn) {
+				loginBtn.click();
+				return true;
+			}
+			return false;
+		})()
+	"#;
+	page.evaluate(login_script).await.ok();
+	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+	// Fill and submit login form
+	log!("Filling login form...");
+	fill_and_submit_login_form(page, config).await?;
+
+	// Wait for login to complete
+	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+	// Verify login
+	let logout_exists = page.find_element("a[href*='logout'], .usermenu, #user-menu-toggle").await.is_ok();
+	if logout_exists {
+		log!("Login successful!");
+	} else {
+		log!("Warning: Could not verify login success");
+	}
+
+	// Navigate to target URL
+	log!("Navigating to target URL: {}", target_url);
+	page.goto(target_url).await.map_err(|e| eyre!("Failed to navigate to target: {}", e))?;
+	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+	Ok(())
+}
+
+/// Select "Université Clermont Auvergne" from the federation dropdown
+async fn select_university_from_dropdown(page: &Page) -> Result<()> {
+	// Open the select2 dropdown using jQuery API
+	let open_script = r#"
+		(function() {
+			if (typeof $ !== 'undefined') {
+				$('select').select2('open');
+				return 'opened';
+			}
+			return 'jquery not found';
+		})()
+	"#;
+	page.evaluate(open_script).await.map_err(|e| eyre!("Failed to open dropdown: {}", e))?;
+	tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+	// Type in the search field
+	let type_script = r#"
+		(function() {
+			const searchInput = document.querySelector('input.select2-search__field');
+			if (searchInput) {
+				searchInput.focus();
+				searchInput.value = "Université Clermont Auvergne";
+				searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+				return 'typed';
+			}
+			return 'search field not found';
+		})()
+	"#;
+	page.evaluate(type_script).await.map_err(|e| eyre!("Failed to type: {}", e))?;
+	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+	// Press Enter to select the option
+	page.evaluate(r#"document.querySelector('input.select2-search__field').dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', keyCode: 13, bubbles: true}))"#)
+		.await
+		.map_err(|e| eyre!("Failed to press Enter: {}", e))?;
+	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+	// Click the "Select" button
+	let btn_result = page
+		.evaluate(
+			r#"
+		(function() {
+			const btns = document.querySelectorAll('button, input[type="submit"]');
+			for (const btn of btns) {
+				const text = (btn.textContent || btn.value || '').toLowerCase();
+				if (text.includes('select') || text.includes('sélectionner')) {
+					btn.click();
+					return 'clicked: ' + text;
+				}
+			}
+			// Fallback: click any button
+			if (btns.length > 0) {
+				btns[0].click();
+				return 'clicked first button';
+			}
+			return 'no button found';
+		})()
+	"#,
+		)
+		.await
+		.map_err(|e| eyre!("Failed to click Select button: {}", e))?;
+	log!("Select button result: {:?}", btn_result.value());
+	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+	Ok(())
+}
+
+/// Fill username/password and submit the login form
+async fn fill_and_submit_login_form(page: &Page, config: &AppConfig) -> Result<()> {
+	let fill_script = format!(
+		r#"
+		(function() {{
+			const usernameField = document.querySelector('input[name="username"], input[id="username"]');
+			const passwordField = document.querySelector('input[name="password"], input[id="password"], input[type="password"]');
+			if (usernameField && passwordField) {{
+				usernameField.value = "{}";
+				passwordField.value = "{}";
+				return true;
+			}}
+			return false;
+		}})()
+		"#,
+		config.username, config.password
+	);
+	page.evaluate(fill_script).await.map_err(|e| eyre!("Failed to fill login form: {}", e))?;
+
+	// Submit
+	let submit_script = r#"
+		(function() {
+			const submitButton = document.querySelector('button[type="submit"], input[type="submit"]');
+			if (submitButton) {
+				submitButton.click();
+				return true;
+			}
+			const form = document.querySelector('form');
+			if (form) {
+				form.submit();
+				return true;
+			}
+			return false;
+		})()
+	"#;
+	page.evaluate(submit_script).await.map_err(|e| eyre!("Failed to submit login form: {}", e))?;
+
+	Ok(())
+}

@@ -1,4 +1,3 @@
-use ask_llm::{Client as LlmClient, Conversation, Model, Role};
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use clap::Parser;
 use color_eyre::{
@@ -10,6 +9,8 @@ use uni_headless::{
 	Choice, Image, Question, RequiredFile,
 	config::{AppConfig, SettingsFlags},
 	is_vpl_url,
+	llm::{LlmAnswerResult, ask_llm_for_answer, ask_llm_for_code},
+	login::{Site, login_and_navigate},
 };
 use v_utils::{
 	clientside, elog,
@@ -67,187 +68,23 @@ async fn main() -> Result<()> {
 		}
 	});
 
-	// Determine which site we're working with based on target URL
-	let is_caseine = args.target_url.contains("caseine.org");
-	let base_url = if is_caseine { "https://moodle.caseine.org/" } else { "https://moodle2025.uca.fr/" };
+	// Determine which site we're working with
+	let site = Site::detect(&args.target_url);
+	log!("Detected site: {}", site.name());
 
-	log!("Detected site: {}", if is_caseine { "caseine.org" } else { "moodle2025.uca.fr" });
+	// Create page - for caseine go directly to target, for UCA go to base
+	let start_url = match site {
+		Site::Caseine => args.target_url.clone(),
+		Site::UcaMoodle => "https://moodle2025.uca.fr/".to_string(),
+	};
 
-	// Create a new page and navigate directly to the login site
-	let page = browser.new_page(base_url).await.map_err(|e| eyre!("Failed to create new page: {}", e))?;
-
-	// Wait for page to load
+	let page = browser.new_page(&start_url).await.map_err(|e| eyre!("Failed to create new page: {}", e))?;
 	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-	log!("Looking for login elements...");
+	// Perform site-specific login and navigate to target
+	login_and_navigate(&page, site, &args.target_url, &config).await?;
 
-	// Check if we need to click a login button first
-	let login_button_exists = page.find_element("a[href*='login'], button:has-text('Log in'), a:has-text('Log in')").await.is_ok();
-
-	if login_button_exists {
-		log!("Clicking login button...");
-		if let Ok(login_btn) = page.find_element("a[href*='login']").await {
-			login_btn.click().await.map_err(|e| eyre!("Failed to click login button: {}", e))?;
-			tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-		}
-	}
-
-	// Handle caseine.org OAuth flow
-	if is_caseine {
-		log!("Handling caseine.org OAuth flow...");
-
-		// Look for "Autres comptes universitaires" button
-		tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
-		let oauth_script = r#"
-			(function() {
-				// Find the "Autres comptes universitaires" button
-				const buttons = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
-				const oauthButton = buttons.find(btn =>
-					btn.textContent.includes('Autres comptes universitaires') ||
-					btn.textContent.includes('autres comptes')
-				);
-
-				if (oauthButton) {
-					oauthButton.click();
-					return true;
-				}
-				return false;
-			})()
-		"#;
-
-		log!("Clicking 'Autres comptes universitaires'...");
-		page.evaluate(oauth_script).await.map_err(|e| eyre!("Failed to click OAuth button: {e}"))?;
-
-		tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-		// Type in the university name in the dropdown
-		log!("Typing university name in dropdown...");
-		let dropdown_script = r#"
-			(function() {
-				// Find and focus the search input
-				const searchInput = document.querySelector('input[type="text"], input[placeholder*="Search"], input[role="searchbox"]');
-				if (searchInput) {
-					searchInput.focus();
-					searchInput.value = "Université Clermont Auvergne";
-
-					// Trigger input event to make dropdown appear
-					const event = new Event('input', { bubbles: true });
-					searchInput.dispatchEvent(event);
-					return true;
-				}
-				return false;
-			})()
-		"#;
-
-		page.evaluate(dropdown_script)
-			.await
-			.map_err(|e| color_eyre::eyre::eyre!("Failed to interact with dropdown: {}", e))?;
-
-		tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-		// Click on the "Select" or university option
-		log!("Selecting university from dropdown...");
-		let select_script = r#"
-			(function() {
-				// Look for the selection button or the university option
-				const options = Array.from(document.querySelectorAll('button, a, div[role="option"], li'));
-				const selectButton = options.find(opt =>
-					opt.textContent.includes('Université Clermont Auvergne') ||
-					opt.textContent.includes('Select')
-				);
-
-				if (selectButton) {
-					selectButton.click();
-					return true;
-				}
-				return false;
-			})()
-		"#;
-
-		page.evaluate(select_script).await.map_err(|e| color_eyre::eyre::eyre!("Failed to select university: {}", e))?;
-
-		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-
-		log!("OAuth provider selected, waiting for redirect to UCA login...");
-	}
-
-	// Wait for username field and fill it using JavaScript for reliability
-	log!("Waiting for username field...");
-
-	// Use JavaScript to fill the form (more reliable than typing)
-	let fill_script = format!(
-		r#"
-		(function() {{
-			const usernameField = document.querySelector('input[name="username"], input[id="username"]');
-			const passwordField = document.querySelector('input[name="password"], input[id="password"], input[type="password"]');
-
-			if (usernameField && passwordField) {{
-				usernameField.value = "{}";
-				passwordField.value = "{}";
-				return true;
-			}}
-			return false;
-		}})()
-		"#,
-		config.username, config.password
-	);
-
-	log!("Filling login form...");
-	let _result = page.evaluate(fill_script).await.map_err(|e| color_eyre::eyre::eyre!("Failed to evaluate fill script: {}", e))?;
-
-	log!("Form filled successfully");
-
-	// Submit the form via JavaScript
-	log!("Submitting login form...");
-	let submit_script = r#"
-		(function() {
-			const submitButton = document.querySelector('button[type="submit"], input[type="submit"]');
-			if (submitButton) {
-				submitButton.click();
-				return true;
-			}
-			// Try to submit the form directly
-			const form = document.querySelector('form');
-			if (form) {
-				form.submit();
-				return true;
-			}
-			return false;
-		})()
-	"#;
-
-	page.evaluate(submit_script).await.map_err(|e| color_eyre::eyre::eyre!("Failed to submit form: {}", e))?;
-
-	// Wait for login to complete
-	log!("Waiting for login to complete...");
-	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-
-	// Verify login by checking URL or looking for logout button
-	let current_url = page.url().await.map_err(|e| color_eyre::eyre::eyre!("Failed to get current URL: {}", e))?;
-
-	log!("Current URL after login: {:?}", current_url);
-
-	// Check if login was successful by looking for user menu or logout link
-	let logout_exists = page.find_element("a[href*='logout'], .usermenu, #user-menu-toggle").await.is_ok();
-
-	if logout_exists {
-		log!("Login successful! User menu found.");
-	} else {
-		elog!("Warning: Could not verify login success. User menu not found.");
-	}
-
-	// Navigate to target URL
-	log!("Navigating to target URL: {}", args.target_url);
-	page.goto(&args.target_url)
-		.await
-		.map_err(|e| color_eyre::eyre::eyre!("Failed to navigate to target URL: {}", e))?;
-
-	// Wait for the quiz page to load
-	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-
-	let final_url = page.url().await.map_err(|e| color_eyre::eyre::eyre!("Failed to get final URL: {}", e))?;
-
+	let final_url = page.url().await.map_err(|e| eyre!("Failed to get final URL: {}", e))?;
 	log!("Successfully navigated to: {:?}", final_url);
 
 	// Check if this is a VPL (code submission) page
@@ -325,7 +162,7 @@ async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool) -> Result<()
 
 	// Ask LLM to generate code
 	log!("Asking LLM to generate code solution...");
-	match ask_llm_for_code(&question).await {
+	let files = match ask_llm_for_code(&question).await {
 		Ok(files) => {
 			eprintln!("\nGenerated code:");
 			for (filename, content) in &files {
@@ -333,16 +170,261 @@ async fn handle_vpl_page(page: &chromiumoxide::Page, ask_llm: bool) -> Result<()
 				eprintln!("{}", content);
 			}
 			eprintln!();
-
-			// For now, just display the code - submission will be implemented in next phase
-			log!("Code generated. Manual submission required for now.");
+			files
 		}
 		Err(e) => {
 			elog!("Failed to generate code: {}", e);
+			return Ok(());
+		}
+	};
+
+	if files.is_empty() {
+		elog!("No code files generated");
+		return Ok(());
+	}
+
+	// Navigate to the Edit page
+	log!("Navigating to VPL editor...");
+	if !click_vpl_edit_button(page).await? {
+		elog!("Could not find Edit button on VPL page");
+		return Ok(());
+	}
+
+	// Wait for editor to load
+	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+	// Submit the code files
+	log!("Pasting code into editor...");
+	for (filename, content) in &files {
+		if let Err(e) = set_vpl_file_content(page, filename, content).await {
+			elog!("Failed to set content for {}: {}", filename, e);
 		}
 	}
 
+	// Save with Ctrl+S
+	log!("Saving code (Ctrl+S)...");
+	send_keyboard_shortcut(page, "s", true, false, false).await?;
+	tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+	// Evaluate with F11
+	log!("Running evaluation (F11)...");
+	send_key(page, "F11").await?;
+
+	// Wait for evaluation to complete and parse results
+	log!("Waiting for evaluation results...");
+	tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+	let eval_result = parse_vpl_evaluation_result(page).await?;
+	if let Some(result) = eval_result {
+		eprintln!("\n=== Evaluation Result ===");
+		eprintln!("{}", result);
+	} else {
+		log!("No evaluation result found (may still be running)");
+	}
+
 	Ok(())
+}
+
+/// Click the Edit button on a VPL page to open the editor
+async fn click_vpl_edit_button(page: &chromiumoxide::Page) -> Result<bool> {
+	let script = r#"
+		(function() {
+			// Look for nav-link with title "Edit"
+			const editLink = document.querySelector('a.nav-link[title="Edit"]');
+			if (editLink) {
+				editLink.click();
+				return true;
+			}
+
+			// Fallback: href-based
+			const hrefLink = document.querySelector('a[href*="forms/edit.php"]');
+			if (hrefLink) {
+				hrefLink.click();
+				return true;
+			}
+
+			return false;
+		})()
+	"#;
+
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click Edit button: {}", e))?;
+	Ok(result.value().and_then(|v| v.as_bool()).unwrap_or(false))
+}
+
+/// Set the content of a file in the VPL editor
+async fn set_vpl_file_content(page: &chromiumoxide::Page, filename: &str, content: &str) -> Result<()> {
+	// Escape the content for JavaScript
+	let escaped_content = content
+		.replace('\\', "\\\\")
+		.replace('`', "\\`")
+		.replace('$', "\\$")
+		.replace('\n', "\\n")
+		.replace('\r', "\\r")
+		.replace('\t', "\\t");
+
+	let script = format!(
+		r#"
+		(function() {{
+			const filename = "{}";
+			const content = `{}`;
+
+			// VPL uses ACE editor - find and set content
+			// First, try to find the ACE editor instance
+			if (typeof ace !== 'undefined') {{
+				// Get all editor instances
+				const editors = document.querySelectorAll('.ace_editor');
+				for (const editorEl of editors) {{
+					const editor = ace.edit(editorEl);
+					if (editor) {{
+						editor.setValue(content, -1);
+						return true;
+					}}
+				}}
+			}}
+
+			// Try VPL's own editor API
+			if (typeof VPL !== 'undefined' && VPL.editor) {{
+				VPL.editor.setContent(content);
+				return true;
+			}}
+
+			// Fallback: find textarea and set value
+			const textareas = document.querySelectorAll('textarea');
+			for (const ta of textareas) {{
+				if (ta.name && ta.name.includes('file') || ta.id && ta.id.includes('file')) {{
+					ta.value = content;
+					ta.dispatchEvent(new Event('input', {{ bubbles: true }}));
+					return true;
+				}}
+			}}
+
+			// Last resort: find any visible textarea
+			for (const ta of textareas) {{
+				if (ta.offsetParent !== null) {{
+					ta.value = content;
+					ta.dispatchEvent(new Event('input', {{ bubbles: true }}));
+					return true;
+				}}
+			}}
+
+			return false;
+		}})()
+		"#,
+		filename, escaped_content
+	);
+
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set file content: {}", e))?;
+
+	if result.value().and_then(|v| v.as_bool()) != Some(true) {
+		return Err(eyre!("Could not find editor to set content"));
+	}
+
+	Ok(())
+}
+
+/// Send a keyboard shortcut (e.g., Ctrl+S)
+async fn send_keyboard_shortcut(page: &chromiumoxide::Page, key: &str, ctrl: bool, shift: bool, alt: bool) -> Result<()> {
+	use chromiumoxide::cdp::browser_protocol::input::{DispatchKeyEventParams, DispatchKeyEventType};
+
+	let modifiers = (if ctrl { 2 } else { 0 }) | (if shift { 8 } else { 0 }) | (if alt { 1 } else { 0 });
+
+	// Key down
+	let key_down = DispatchKeyEventParams::builder()
+		.r#type(DispatchKeyEventType::KeyDown)
+		.key(key.to_uppercase())
+		.code(format!("Key{}", key.to_uppercase()))
+		.modifiers(modifiers)
+		.build()
+		.map_err(|e| eyre!("Failed to build key down event: {:?}", e))?;
+
+	page.execute(key_down).await.map_err(|e| eyre!("Failed to send key down: {}", e))?;
+
+	// Key up
+	let key_up = DispatchKeyEventParams::builder()
+		.r#type(DispatchKeyEventType::KeyUp)
+		.key(key.to_uppercase())
+		.code(format!("Key{}", key.to_uppercase()))
+		.modifiers(modifiers)
+		.build()
+		.map_err(|e| eyre!("Failed to build key up event: {:?}", e))?;
+
+	page.execute(key_up).await.map_err(|e| eyre!("Failed to send key up: {}", e))?;
+
+	Ok(())
+}
+
+/// Send a function key (F1-F12)
+async fn send_key(page: &chromiumoxide::Page, key: &str) -> Result<()> {
+	use chromiumoxide::cdp::browser_protocol::input::{DispatchKeyEventParams, DispatchKeyEventType};
+
+	// Key down
+	let key_down = DispatchKeyEventParams::builder()
+		.r#type(DispatchKeyEventType::KeyDown)
+		.key(key)
+		.code(key)
+		.build()
+		.map_err(|e| eyre!("Failed to build key down event: {:?}", e))?;
+
+	page.execute(key_down).await.map_err(|e| eyre!("Failed to send key down: {}", e))?;
+
+	// Key up
+	let key_up = DispatchKeyEventParams::builder()
+		.r#type(DispatchKeyEventType::KeyUp)
+		.key(key)
+		.code(key)
+		.build()
+		.map_err(|e| eyre!("Failed to build key up event: {:?}", e))?;
+
+	page.execute(key_up).await.map_err(|e| eyre!("Failed to send key up: {}", e))?;
+
+	Ok(())
+}
+
+/// Parse the evaluation result from the VPL page
+async fn parse_vpl_evaluation_result(page: &chromiumoxide::Page) -> Result<Option<String>> {
+	let script = r#"
+		(function() {
+			// VPL shows results in various places
+			const selectors = [
+				'.vpl_ide_console',
+				'.vpl_ide_result',
+				'#vpl_console',
+				'.console-output',
+				'#result',
+				'.evaluation-result',
+				'pre.result'
+			];
+
+			for (const selector of selectors) {
+				const el = document.querySelector(selector);
+				if (el && el.textContent.trim()) {
+					return el.textContent.trim();
+				}
+			}
+
+			// Look for any element containing grade/result info
+			const allElements = document.querySelectorAll('*');
+			for (const el of allElements) {
+				const text = el.textContent;
+				if (text && (text.includes('Grade:') || text.includes('Result:') ||
+				    text.includes('Passed') || text.includes('Failed') ||
+				    text.includes('Score:') || text.includes('Points:'))) {
+					// Get just this element's direct text, not children
+					const directText = Array.from(el.childNodes)
+						.filter(n => n.nodeType === Node.TEXT_NODE)
+						.map(n => n.textContent.trim())
+						.join(' ');
+					if (directText) return directText;
+				}
+			}
+
+			return null;
+		})()
+	"#;
+
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to parse evaluation result: {}", e))?;
+
+	Ok(result.value().and_then(|v| v.as_str()).map(|s| s.to_string()))
 }
 
 /// Handle a quiz (multi-choice) page
@@ -776,175 +858,6 @@ async fn parse_questions(page: &chromiumoxide::Page) -> Result<Vec<Question>> {
 	Ok(questions)
 }
 
-/// LLM response for single-choice questions
-#[derive(Debug, serde::Deserialize)]
-struct LlmSingleAnswer {
-	response: String,
-	response_number: usize,
-}
-
-/// LLM response for multi-choice questions
-#[derive(Debug, serde::Deserialize)]
-struct LlmMultiAnswer {
-	responses: Vec<String>,
-	response_numbers: Vec<usize>,
-}
-
-/// Result of LLM answering a question
-pub enum LlmAnswerResult {
-	Single { idx: usize, text: String },
-	Multi { indices: Vec<usize>, texts: Vec<String> },
-}
-
-/// Fetch an image via the browser and return its base64 data and media type
-async fn fetch_image_as_base64(page: &chromiumoxide::Page, url: &str) -> Result<(String, String)> {
-	let fetch_script = format!(
-		r#"
-		(async function() {{
-			try {{
-				const response = await fetch("{}");
-				if (!response.ok) return null;
-				const blob = await response.blob();
-				const mediaType = blob.type || 'image/png';
-				return new Promise((resolve) => {{
-					const reader = new FileReader();
-					reader.onloadend = () => {{
-						// reader.result is "data:image/png;base64,XXXX..."
-						const base64 = reader.result.split(',')[1];
-						resolve(JSON.stringify({{base64: base64, mediaType: mediaType}}));
-					}};
-					reader.readAsDataURL(blob);
-				}});
-			}} catch (e) {{
-				return null;
-			}}
-		}})()
-		"#,
-		url
-	);
-
-	let result = page.evaluate(fetch_script).await.map_err(|e| eyre!("Failed to fetch image: {}", e))?;
-
-	let json_str = result.value().and_then(|v| v.as_str()).ok_or_else(|| eyre!("Failed to fetch image: browser returned null"))?;
-
-	let parsed: serde_json::Value = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse image data: {}", e))?;
-
-	let base64 = parsed["base64"].as_str().ok_or_else(|| eyre!("Missing base64 data"))?.to_string();
-	let media_type = parsed["mediaType"].as_str().unwrap_or("image/png").to_string();
-
-	Ok((base64, media_type))
-}
-
-/// Ask the LLM to answer a question
-async fn ask_llm_for_answer(page: &chromiumoxide::Page, question: &Question) -> Result<LlmAnswerResult> {
-	let question_text = question.question_text();
-	let choices = question.choices();
-
-	let mut options_text = String::new();
-	for (i, choice) in choices.iter().enumerate() {
-		options_text.push_str(&format!("{}. {}\n", i + 1, choice.text));
-	}
-
-	let (prompt, max_tokens) = if question.is_multi() {
-		(
-			format!(
-				r#"You are answering a multiple-choice question where MULTIPLE answers may be correct. Select ALL correct answers.
-
-Question:
-{question_text}
-
-Options:
-{options_text}
-Respond with JSON only, no markdown, in this exact format:
-{{"responses": ["<text of first correct answer>", "<text of second correct answer>", ...], "response_numbers": [<number of first correct answer>, <number of second correct answer>, ...]}}"#
-			),
-			256,
-		)
-	} else {
-		(
-			format!(
-				r#"You are answering a single-choice question. Pick the ONE correct answer.
-
-Question:
-{question_text}
-
-Options:
-{options_text}
-Respond with JSON only, no markdown, in this exact format:
-{{"response": "<the text of the correct answer>", "response_number": <the number of the correct answer>}}"#
-			),
-			128,
-		)
-	};
-
-	// Build client and attach images
-	let mut client = LlmClient::new().model(Model::Medium).max_tokens(max_tokens).force_json();
-
-	// Attach question images
-	for img in question.images() {
-		match fetch_image_as_base64(page, &img.url).await {
-			Ok((base64, media_type)) => {
-				client = client.append_file(base64, media_type);
-			}
-			Err(e) => {
-				tracing::warn!("Failed to fetch image for LLM: {}", e);
-			}
-		}
-	}
-
-	// Attach choice images
-	for choice in choices {
-		for img in &choice.images {
-			match fetch_image_as_base64(page, &img.url).await {
-				Ok((base64, media_type)) => {
-					client = client.append_file(base64, media_type);
-				}
-				Err(e) => {
-					tracing::warn!("Failed to fetch choice image for LLM: {}", e);
-				}
-			}
-		}
-	}
-
-	let mut conv = Conversation::new();
-	conv.add(Role::User, prompt);
-
-	let response = client.conversation(&conv).await?;
-
-	tracing::debug!("LLM raw response: {}", response.text);
-
-	let json_str = response.text.trim();
-
-	if question.is_multi() {
-		let answer: LlmMultiAnswer = serde_json::from_str(json_str).map_err(|e| color_eyre::eyre::eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, json_str))?;
-
-		// Validate all indices
-		for &num in &answer.response_numbers {
-			if num == 0 || num > choices.len() {
-				return Err(color_eyre::eyre::eyre!("LLM returned invalid answer index: {} (expected 1-{})", num, choices.len()));
-			}
-		}
-
-		let indices: Vec<usize> = answer.response_numbers.iter().map(|n| n - 1).collect();
-		Ok(LlmAnswerResult::Multi { indices, texts: answer.responses })
-	} else {
-		let answer: LlmSingleAnswer = serde_json::from_str(json_str).map_err(|e| color_eyre::eyre::eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, json_str))?;
-
-		if answer.response_number == 0 || answer.response_number > choices.len() {
-			return Err(color_eyre::eyre::eyre!(
-				"LLM returned invalid answer index: {} (expected 1-{})",
-				answer.response_number,
-				choices.len()
-			));
-		}
-
-		Ok(LlmAnswerResult::Single {
-			idx: answer.response_number - 1,
-			text: answer.response,
-		})
-	}
-}
-
 /// Select an answer by clicking the input (radio button or checkbox)
 async fn select_answer(page: &chromiumoxide::Page, input_name: &str, input_value: &str) -> Result<()> {
 	let script = format!(
@@ -1283,68 +1196,4 @@ async fn parse_vpl_page(page: &chromiumoxide::Page) -> Result<Option<Question>> 
 		module_id,
 		images,
 	}))
-}
-
-/// LLM response for code submission questions
-#[derive(Debug, serde::Deserialize)]
-struct LlmCodeAnswer {
-	files: Vec<LlmCodeFile>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct LlmCodeFile {
-	filename: String,
-	content: String,
-}
-
-/// Ask the LLM to generate code for a VPL submission
-async fn ask_llm_for_code(question: &Question) -> Result<Vec<(String, String)>> {
-	let Question::CodeSubmission { description, required_files, .. } = question else {
-		bail!("Expected CodeSubmission question");
-	};
-
-	let files_list = if required_files.is_empty() {
-		"No specific files required - determine appropriate filename(s) based on the problem.".to_string()
-	} else {
-		required_files
-			.iter()
-			.map(|f| {
-				if f.content.is_empty() {
-					format!("- {}", f.name)
-				} else {
-					format!("- {} (template provided):\n```\n{}\n```", f.name, f.content)
-				}
-			})
-			.collect::<Vec<_>>()
-			.join("\n")
-	};
-
-	let prompt = format!(
-		r#"You are solving a programming assignment. Write the complete solution code.
-
-Problem Description:
-{description}
-
-Required Files:
-{files_list}
-
-IMPORTANT: Respond with JSON only, no markdown, in this exact format:
-{{"files": [{{"filename": "<filename>", "content": "<complete file content>"}}]}}
-
-Make sure the code is complete, correct, and ready to submit. Include all necessary imports/includes."#
-	);
-
-	let mut conv = Conversation::new();
-	conv.add(Role::User, prompt);
-
-	let client = LlmClient::new().model(Model::Medium).max_tokens(4096).force_json();
-
-	let response = client.conversation(&conv).await?;
-
-	tracing::debug!("LLM code response: {}", response.text);
-
-	let json_str = response.text.trim();
-	let answer: LlmCodeAnswer = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse LLM code response: {} - raw: '{}'", e, json_str))?;
-
-	Ok(answer.files.into_iter().map(|f| (f.filename, f.content)).collect())
 }
