@@ -19,3 +19,5 @@ With curl:
 curl -LO https://github.com/valeratrades/uni_headless/releases/download/latest-windows/uni_headless.exe
 ./uni_headless.exe
 ```
+
+To build from source on Windows, use `cargo build --release --no-default-features` to exclude the xdg dependency.

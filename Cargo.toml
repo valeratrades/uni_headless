@@ -10,7 +10,6 @@ cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 [features]
 default = ["xdg"]
 xdg = ["v_utils/xdg"]
-windows = []
 
 [dependencies]
 ask_llm = { version = "^2.1.0" }
