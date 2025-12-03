@@ -1,5 +1,6 @@
 //! Page execution logic - handles VPL and quiz pages
 
+#[cfg(feature = "xdg")]
 use std::path::PathBuf;
 
 use chromiumoxide::Page;
@@ -7,7 +8,9 @@ use color_eyre::{
 	Result,
 	eyre::{bail, eyre},
 };
-use v_utils::{Percent, elog, io::confirm, log, xdg_state_dir};
+#[cfg(feature = "xdg")]
+use v_utils::xdg_state_dir;
+use v_utils::{Percent, elog, io::confirm, log};
 
 use crate::{
 	Choice, Image, Question, RequiredFile,
@@ -113,6 +116,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig)
 		}
 
 		// Save the editor page HTML
+		#[cfg(feature = "xdg")]
 		if let Err(e) = save_page_html(page, "vpl_editor").await {
 			elog!("Failed to save editor page HTML: {e}");
 		}
@@ -1152,6 +1156,7 @@ pub async fn parse_vpl_page(page: &Page) -> Result<Option<Question>> {
 }
 
 /// Save the current page's HTML to disk for debugging
+#[cfg(feature = "xdg")]
 pub async fn save_page_html(page: &Page, label: &str) -> Result<PathBuf> {
 	let html_dir = xdg_state_dir!("persist_htmls");
 	std::fs::create_dir_all(&html_dir).map_err(|e| eyre!("Failed to create HTML dir: {}", e))?;

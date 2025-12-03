@@ -7,6 +7,11 @@ edition = "2024"
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
+[features]
+default = ["xdg"]
+xdg = ["v_utils/xdg"]
+windows = []
+
 [dependencies]
 ask_llm = { version = "^2.1.0" }
 base64 = "0.22"
@@ -21,7 +26,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-v_utils = { version = "2.11.1", features = ["xdg", "cli", "break-wasm"] }
+v_utils = { version = "2.11.2", features = ["cli", "break-wasm"] }
 
 [lints.clippy]
 # Stable

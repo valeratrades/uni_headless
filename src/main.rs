@@ -4,13 +4,17 @@ use chromiumoxide::browser::{Browser, BrowserConfig};
 use clap::Parser;
 use color_eyre::{Result, eyre::eyre};
 use futures::StreamExt;
+#[cfg(feature = "xdg")]
+use uni_headless::runner::save_page_html;
 use uni_headless::{
 	config::{AppConfig, SettingsFlags},
 	is_vpl_url,
 	login::{Site, login_and_navigate},
-	runner::{handle_quiz_page, handle_vpl_page, save_page_html},
+	runner::{handle_quiz_page, handle_vpl_page},
 };
-use v_utils::{clientside, elog, log, xdg_state_dir};
+#[cfg(feature = "xdg")]
+use v_utils::xdg_state_dir;
+use v_utils::{clientside, elog, log};
 
 #[derive(Debug, Parser)]
 #[command(name = "uni_headless")]
@@ -49,6 +53,7 @@ async fn main() -> Result<()> {
 	log!("Visible mode: {}", args.visible);
 
 	// Clean up old HTML logs on startup (unless in debug mode)
+	#[cfg(feature = "xdg")]
 	if !args.debug_from_html {
 		let html_dir = xdg_state_dir!("persist_htmls");
 		if html_dir.exists() {
@@ -196,9 +201,12 @@ async fn process_url(browser: &mut Browser, target_url: &str, config: &mut AppCo
 	log!("Successfully navigated to: {:?}", final_url);
 
 	// Save the page HTML for debugging
-	let url_label = final_url.as_deref().unwrap_or("unknown").replace("https://", "").replace("http://", "");
-	if let Err(e) = save_page_html(&page, &url_label).await {
-		elog!("Failed to save page HTML: {}", e);
+	#[cfg(feature = "xdg")]
+	{
+		let url_label = final_url.as_deref().unwrap_or("unknown").replace("https://", "").replace("http://", "");
+		if let Err(e) = save_page_html(&page, &url_label).await {
+			elog!("Failed to save page HTML: {}", e);
+		}
 	}
 
 	// Check if this is a VPL page
@@ -219,6 +227,7 @@ async fn process_url(browser: &mut Browser, target_url: &str, config: &mut AppCo
 		Ok(success) => Ok((success, page)),
 		Err(e) => {
 			// Save error page HTML before returning error
+			#[cfg(feature = "xdg")]
 			if let Err(save_err) = save_page_html(&page, "errored_on").await {
 				elog!("Failed to save error page HTML: {}", save_err);
 			}
