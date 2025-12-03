@@ -2584,9 +2584,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "v_utils"
-version = "2.11.2"
+version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "796d9429efe6ab2da593b70232ab8f503b836821ef319beb7b8b9f899320945e"
+checksum = "10c25cb80bbf6f504110ca81426443fbf1458e2212035675cf1b80fdf4ae1797"
 dependencies = [
  "config",
  "const_format",
@@ -2613,9 +2613,9 @@ dependencies = [
 
 [[package]]
 name = "v_utils_macros"
-version = "2.7.2"
+version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "584e3cd33d3ead75f5324c058d5ed9f294077d05741d4ce3aa57cde9f34dc166"
+checksum = "5ff50a86a2643eefb00c841ec2578b2f600c68fe0841814e39a373fc13119e20"
 dependencies = [
  "eyre",
  "heck 0.5.0",
