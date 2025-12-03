@@ -80,18 +80,57 @@ async fn main() -> Result<()> {
 	urls.extend(args.do_after.clone());
 
 	// Process URLs
+	let mut processing_error: Option<color_eyre::Report> = None;
+
 	for (idx, target_url) in urls.iter().enumerate() {
 		if idx > 0 {
 			log!("\n========== Processing next URL ({}/{}) ==========", idx + 1, urls.len());
 		}
 
-		let success = process_url(&mut browser, target_url, &mut config, args.ask_llm, args.debug_from_html).await?;
-
-		// For VPL pages, only continue to next URL if we got 100%
-		if is_vpl_url(target_url) && !success {
-			log!("Stopping - did not get perfect grade on VPL");
-			break;
+		match process_url(&mut browser, target_url, &mut config, args.ask_llm, args.debug_from_html).await {
+			Ok((success, _page)) => {
+				// For VPL pages, only continue to next URL if we got 100%
+				if is_vpl_url(target_url) && !success {
+					log!("Stopping - did not get perfect grade on VPL");
+					break;
+				}
+			}
+			Err(e) => {
+				// Error HTML is saved in process_url
+				processing_error = Some(e);
+				break;
+			}
 		}
+	}
+
+	// If there was an error and visible mode, keep browser open for debugging
+	if let Some(ref err) = processing_error {
+		if args.visible {
+			elog!("Error occurred: {}", err);
+			log!("Keeping browser open for debugging. Press Ctrl+C to exit...");
+
+			static SIGINT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+			unsafe {
+				libc::signal(libc::SIGINT, sigint_handler_err as *const () as libc::sighandler_t);
+			}
+
+			extern "C" fn sigint_handler_err(_: libc::c_int) {
+				std::process::exit(130);
+			}
+
+			while SIGINT_COUNT.load(Ordering::SeqCst) == 0 {
+				tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+			}
+
+			handle.abort();
+			let _ = tokio::time::timeout(std::time::Duration::from_secs(2), browser.close()).await;
+		} else {
+			handle.abort();
+			let _ = tokio::time::timeout(std::time::Duration::from_secs(2), browser.close()).await;
+		}
+
+		return Err(processing_error.unwrap());
 	}
 
 	// Keep browser open in visible mode
@@ -128,8 +167,8 @@ async fn main() -> Result<()> {
 	Ok(())
 }
 
-/// Process a single URL - returns true if successful (for VPL: got 100%)
-async fn process_url(browser: &mut Browser, target_url: &str, config: &mut AppConfig, ask_llm: bool, debug_from_html: bool) -> Result<bool> {
+/// Process a single URL - returns (success, page) where success indicates if VPL got 100%
+async fn process_url(browser: &mut Browser, target_url: &str, config: &mut AppConfig, ask_llm: bool, debug_from_html: bool) -> Result<(bool, chromiumoxide::Page)> {
 	// Create/navigate to page
 	let page = if debug_from_html {
 		let file_url = format!("file://{}", target_url);
@@ -169,13 +208,21 @@ async fn process_url(browser: &mut Browser, target_url: &str, config: &mut AppCo
 		is_vpl_url(target_url)
 	};
 
-	let success = if is_vpl {
+	let result = if is_vpl {
 		log!("Detected VPL (Virtual Programming Lab) page");
-		handle_vpl_page(&page, ask_llm, config).await?
+		handle_vpl_page(&page, ask_llm, config).await
 	} else {
-		handle_quiz_page(&page, ask_llm, config).await?;
-		true // Quiz pages don't have a "success" metric
+		handle_quiz_page(&page, ask_llm, config).await.map(|_| true) // Quiz pages don't have a "success" metric
 	};
 
-	Ok(success)
+	match result {
+		Ok(success) => Ok((success, page)),
+		Err(e) => {
+			// Save error page HTML before returning error
+			if let Err(save_err) = save_page_html(&page, "errored_on").await {
+				elog!("Failed to save error page HTML: {}", save_err);
+			}
+			Err(e)
+		}
+	}
 }

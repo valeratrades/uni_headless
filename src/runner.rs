@@ -376,13 +376,21 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 					match answer_result {
 						LlmAnswerResult::Single { idx, .. } => {
 							let choice = &choices[*idx];
-							select_answer(page, &choice.input_name, &choice.input_value).await?;
+							// Only click if not already selected
+							if !choice.selected {
+								toggle_answer(page, &choice.input_name, &choice.input_value).await?;
+							}
 						}
-						LlmAnswerResult::Multi { indices, .. } =>
-							for idx in indices {
-								let choice = &choices[*idx];
-								select_answer(page, &choice.input_name, &choice.input_value).await?;
-							},
+						LlmAnswerResult::Multi { indices, .. } => {
+							let should_select: std::collections::HashSet<usize> = indices.iter().copied().collect();
+							for (i, choice) in choices.iter().enumerate() {
+								let want_selected = should_select.contains(&i);
+								if want_selected != choice.selected {
+									// Need to toggle this choice
+									toggle_answer(page, &choice.input_name, &choice.input_value).await?;
+								}
+							}
+						}
 					}
 				}
 				// Submit once for all questions on this page
@@ -842,8 +850,8 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 	Ok(questions)
 }
 
-/// Select an answer by clicking the input
-async fn select_answer(page: &Page, input_name: &str, input_value: &str) -> Result<()> {
+/// Toggle an answer by clicking the input (select or deselect)
+async fn toggle_answer(page: &Page, input_name: &str, input_value: &str) -> Result<()> {
 	let script = format!(
 		r#"
 		(function() {{
@@ -864,7 +872,7 @@ async fn select_answer(page: &Page, input_name: &str, input_value: &str) -> Resu
 	Ok(())
 }
 
-/// Click the submit button on the quiz page
+/// Click the submit/next button on the quiz page
 async fn click_submit(page: &Page) -> Result<()> {
 	let script = r#"
 		(function() {
@@ -890,9 +898,27 @@ async fn click_submit(page: &Page) -> Result<()> {
 		return Err(eyre!("Failed to find submit button"));
 	}
 
-	page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for submission: {}", e))?;
+	// Wait for page to process submission
+	tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
 	Ok(())
+}
+
+/// Wait for the page URL to change (indicating form submission)
+async fn wait_for_page_change(page: &Page) -> Result<()> {
+	let initial_url = page.url().await.map_err(|e| eyre!("Failed to get URL: {}", e))?;
+
+	loop {
+		tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+		let current_url = page.url().await.map_err(|e| eyre!("Failed to get URL: {}", e))?;
+
+		if current_url != initial_url {
+			// Wait a bit for page to fully load
+			tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+			return Ok(());
+		}
+	}
 }
 
 /// Display an image in terminal using chafa
@@ -949,12 +975,6 @@ async fn display_image_chafa(page: &Page, url: &str, max_cols: u32) -> Result<()
 		return Err(eyre!("chafa failed: {}", String::from_utf8_lossy(&output.stderr)));
 	}
 
-	Ok(())
-}
-
-/// Wait for the page URL to change
-async fn wait_for_page_change(page: &Page) -> Result<()> {
-	page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for page change: {}", e))?;
 	Ok(())
 }
 
