@@ -101,7 +101,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "v_utils",
+ "v_utils 2.12.0",
 ]
 
 [[package]]
@@ -2525,7 +2525,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "v_utils",
+ "v_utils 2.12.1",
 ]
 
 [[package]]
@@ -2607,7 +2607,34 @@ dependencies = [
  "tracing-error",
  "tracing-log",
  "tracing-subscriber",
- "v_utils_macros",
+ "v_utils_macros 2.8.0",
+ "xdg",
+]
+
+[[package]]
+name = "v_utils"
+version = "2.12.1"
+dependencies = [
+ "config",
+ "const_format",
+ "derive-new",
+ "derive_more",
+ "dirs",
+ "eyre",
+ "function_name",
+ "futures",
+ "jiff",
+ "macro-attr",
+ "serde",
+ "serde_json",
+ "strum",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "tracing-error",
+ "tracing-log",
+ "tracing-subscriber",
+ "v_utils_macros 2.8.1",
  "xdg",
 ]
 
@@ -2616,6 +2643,18 @@ name = "v_utils_macros"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ff50a86a2643eefb00c841ec2578b2f600c68fe0841814e39a373fc13119e20"
+dependencies = [
+ "eyre",
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn",
+]
+
+[[package]]
+name = "v_utils_macros"
+version = "2.8.1"
 dependencies = [
  "eyre",
  "heck 0.5.0",
