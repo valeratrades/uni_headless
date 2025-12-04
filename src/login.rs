@@ -25,145 +25,225 @@ impl Site {
 }
 
 /// Perform login for the detected site and navigate to target URL
-pub async fn login_and_navigate(page: &Page, site: Site, target_url: &str, config: &AppConfig) -> Result<()> {
+pub async fn login_and_navigate(page: &Page, site: Site, target_url: &str, config: &AppConfig, semi_manual_login: bool) -> Result<()> {
 	match site {
-		Site::Caseine => login_caseine(page, target_url, config).await,
-		Site::UcaMoodle => login_uca_moodle(page, target_url, config).await,
+		Site::Caseine => login_caseine(page, target_url, config, semi_manual_login).await,
+		Site::UcaMoodle => login_uca_moodle(page, target_url, config, semi_manual_login).await,
 	}
+}
+
+/// Known page types during login flow
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LoginPage {
+	/// Already at target/VPL page
+	Target,
+	/// Enrollment page with Continue button
+	Enrollment,
+	/// Caseine login page
+	CaseineLogin,
+	/// University federation selection page
+	FederationWayf,
+	/// UCA CAS login form
+	UcaCas,
+	/// SAML consent page
+	SamlConsent,
+	/// Unknown/unexpected page
+	Unknown,
+}
+
+fn detect_login_page(url: &str, target_url: &str) -> LoginPage {
+	let target_base = target_url.split('?').next().unwrap_or(target_url);
+	let url_base = url.split('?').next().unwrap_or(url);
+
+	if url_base == target_base {
+		return LoginPage::Target;
+	}
+	if url.contains("/mod/vpl/") && !url.contains("login") && !url.contains("enrol") {
+		return LoginPage::Target;
+	}
+	if url.contains("enrol/index.php") {
+		return LoginPage::Enrollment;
+	}
+	if url.contains("moodle.caseine.org/login/index.php") {
+		return LoginPage::CaseineLogin;
+	}
+	if url.contains("discovery.renater.fr") || url.contains("wayf") {
+		return LoginPage::FederationWayf;
+	}
+	if url.contains("ent.uca.fr/cas") {
+		return LoginPage::UcaCas;
+	}
+	if url.contains("idp.uca.fr") {
+		return LoginPage::SamlConsent;
+	}
+	LoginPage::Unknown
 }
 
 /// Login flow for caseine.org
 /// Goes directly to target URL, handles enrollment redirect, then OAuth login
-async fn login_caseine(page: &Page, target_url: &str, config: &AppConfig) -> Result<()> {
-	let current_url = page.url().await.ok().flatten().unwrap_or_default();
+async fn login_caseine(page: &Page, target_url: &str, config: &AppConfig, semi_manual_login: bool) -> Result<()> {
+	loop {
+		let current_url = page.url().await.ok().flatten().unwrap_or_default();
+		let page_type = detect_login_page(&current_url, target_url);
 
-	// Check if already logged in (landed on target or VPL page)
-	if current_url.contains("/mod/vpl/") && !current_url.contains("login") && !current_url.contains("enrol") {
-		log!("Already logged in, at target page");
-		return Ok(());
-	}
-
-	// Step 1: If on enrollment page, click Continue
-	if current_url.contains("enrol/index.php") {
-		log!("On enrollment page, clicking Continue...");
-		page.evaluate(
-			r#"
-			(function() {
-				const buttons = document.querySelectorAll('button, input[type="submit"], a.btn');
-				for (const btn of buttons) {
-					const text = btn.textContent || btn.value || '';
-					if (text.trim() === 'Continue' || text.trim() === 'Continuer') {
-						btn.click();
-						return true;
-					}
+		match page_type {
+			LoginPage::Target => {
+				log!("Reached target page");
+				return Ok(());
+			}
+			LoginPage::Enrollment => {
+				log!("On enrollment page, clicking Continue...");
+				page.evaluate(
+					r#"
+					(function() {
+						const buttons = document.querySelectorAll('button, input[type="submit"], a.btn');
+						for (const btn of buttons) {
+							const text = btn.textContent || btn.value || '';
+							if (text.trim() === 'Continue' || text.trim() === 'Continuer') {
+								btn.click();
+								return true;
+							}
+						}
+						return false;
+					})()
+				"#,
+				)
+				.await
+				.map_err(|e| eyre!("Failed to click Continue: {}", e))?;
+				tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+			}
+			LoginPage::CaseineLogin => {
+				log!("On login page, clicking login button...");
+				page.evaluate(r#"document.querySelector('a.btn:nth-child(3)').click()"#)
+					.await
+					.map_err(|e| eyre!("Failed to click login button: {}", e))?;
+				tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+			}
+			LoginPage::FederationWayf => {
+				log!("Selecting university from dropdown...");
+				page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for federation page: {}", e))?;
+				tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+				select_university_from_dropdown(page).await?;
+			}
+			LoginPage::UcaCas => {
+				log!("Filling CAS login form...");
+				tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+				fill_and_submit_login_form(page, config).await?;
+				tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+			}
+			LoginPage::SamlConsent => {
+				log!("On SAML consent page, clicking Accept...");
+				tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+				page.evaluate(
+					r#"
+					(function() {
+						const btn = document.querySelector('input[name="_eventId_proceed"]');
+						if (btn) btn.click();
+					})()
+				"#,
+				)
+				.await
+				.ok();
+				tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+			}
+			LoginPage::Unknown => {
+				if semi_manual_login {
+					log!("Unknown page detected at: {}", current_url);
+					log!("Waiting for manual intervention (e.g., enter access password)...");
+					tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+					// Loop will continue, checking if page changed
+				} else {
+					return Err(eyre!("Login failed: unexpected page at {}", current_url));
 				}
-				return false;
-			})()
-		"#,
-		)
-		.await
-		.map_err(|e| eyre!("Failed to click Continue: {}", e))?;
-		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+			}
+		}
 	}
+}
 
-	// Step 2: If on login page, click the federation login button
-	let current_url = page.url().await.ok().flatten().unwrap_or_default();
-	if current_url.contains("moodle.caseine.org/login/index.php") {
-		log!("On login page, clicking login button...");
-		page.evaluate(r#"document.querySelector('a.btn:nth-child(3)').click()"#)
-			.await
-			.map_err(|e| eyre!("Failed to click login button: {}", e))?;
-		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-	}
+/// Known page types during UCA Moodle login flow
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UcaMoodlePage {
+	/// Home page (need to click login)
+	Home,
+	/// Login page with form
+	LoginForm,
+	/// Logged in (has logout link)
+	LoggedIn,
+	/// Target page reached
+	Target,
+	/// Unknown/unexpected page
+	Unknown,
+}
 
-	// Step 3: Select university from dropdown (if on federation page)
-	let current_url = page.url().await.ok().flatten().unwrap_or_default();
-	if current_url.contains("discovery.renater.fr") || current_url.contains("wayf") {
-		log!("Selecting university from dropdown...");
-		page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for federation page: {}", e))?;
-		tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-		select_university_from_dropdown(page).await?;
-	}
-
-	// Step 4: Fill UCA CAS login form (if on CAS page)
-	let current_url = page.url().await.ok().flatten().unwrap_or_default();
-	if current_url.contains("ent.uca.fr/cas") {
-		log!("Filling CAS login form...");
-		tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-		fill_and_submit_login_form(page, config).await?;
-		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-	}
-
-	// Step 5: Click "Accept" button on SAML consent page (if present)
-	let current_url = page.url().await.ok().flatten().unwrap_or_default();
-	if current_url.contains("idp.uca.fr") {
-		log!("On SAML consent page, clicking Accept...");
-		tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-		page.evaluate(
-			r#"
-			(function() {
-				const btn = document.querySelector('input[name="_eventId_proceed"]');
-				if (btn) btn.click();
-			})()
-		"#,
-		)
-		.await
-		.ok();
-		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-	}
-
-	let final_url = page.url().await.ok().flatten().unwrap_or_default();
-	log!("Login complete, now at: {}", final_url);
-
-	// Check we ended up at the target (compare base path, ignoring query params)
+fn detect_uca_moodle_page(url: &str, target_url: &str, has_logout: bool) -> UcaMoodlePage {
 	let target_base = target_url.split('?').next().unwrap_or(target_url);
-	let final_base = final_url.split('?').next().unwrap_or(&final_url);
-	if final_base != target_base {
-		return Err(eyre!("Login failed: expected to be at {}, but at {}", target_url, final_url));
-	}
+	let url_base = url.split('?').next().unwrap_or(url);
 
-	Ok(())
+	if url_base == target_base {
+		return UcaMoodlePage::Target;
+	}
+	if url.contains("/login/") {
+		return UcaMoodlePage::LoginForm;
+	}
+	if has_logout {
+		return UcaMoodlePage::LoggedIn;
+	}
+	if url.contains("moodle2025.uca.fr") && !url.contains("/mod/") {
+		return UcaMoodlePage::Home;
+	}
+	UcaMoodlePage::Unknown
 }
 
 /// Login flow for moodle2025.uca.fr
 /// Standard Moodle login with username/password
-async fn login_uca_moodle(page: &Page, target_url: &str, config: &AppConfig) -> Result<()> {
-	// Click login button if needed
-	log!("Looking for login elements...");
-	let login_script = r#"
-		(function() {
-			const loginBtn = document.querySelector('a[href*="login"]');
-			if (loginBtn) {
-				loginBtn.click();
-				return true;
+async fn login_uca_moodle(page: &Page, target_url: &str, config: &AppConfig, semi_manual_login: bool) -> Result<()> {
+	loop {
+		let current_url = page.url().await.ok().flatten().unwrap_or_default();
+		let has_logout = page.find_element("a[href*='logout'], .usermenu, #user-menu-toggle").await.is_ok();
+		let page_type = detect_uca_moodle_page(&current_url, target_url, has_logout);
+
+		match page_type {
+			UcaMoodlePage::Target => {
+				log!("Reached target page");
+				return Ok(());
 			}
-			return false;
-		})()
-	"#;
-	page.evaluate(login_script).await.ok();
-	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-	// Fill and submit login form
-	log!("Filling login form...");
-	fill_and_submit_login_form(page, config).await?;
-
-	// Wait for login to complete
-	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-
-	// Verify login
-	let logout_exists = page.find_element("a[href*='logout'], .usermenu, #user-menu-toggle").await.is_ok();
-	if logout_exists {
-		log!("Login successful!");
-	} else {
-		log!("Warning: Could not verify login success");
+			UcaMoodlePage::Home => {
+				log!("On home page, clicking login...");
+				let login_script = r#"
+					(function() {
+						const loginBtn = document.querySelector('a[href*="login"]');
+						if (loginBtn) {
+							loginBtn.click();
+							return true;
+						}
+						return false;
+					})()
+				"#;
+				page.evaluate(login_script).await.ok();
+				tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+			}
+			UcaMoodlePage::LoginForm => {
+				log!("Filling login form...");
+				fill_and_submit_login_form(page, config).await?;
+				tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+			}
+			UcaMoodlePage::LoggedIn => {
+				log!("Login successful! Navigating to target URL: {}", target_url);
+				page.goto(target_url).await.map_err(|e| eyre!("Failed to navigate to target: {}", e))?;
+				tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+			}
+			UcaMoodlePage::Unknown => {
+				if semi_manual_login {
+					log!("Unknown page detected at: {}", current_url);
+					log!("Waiting for manual intervention (e.g., enter access password)...");
+					tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+					// Loop will continue, checking if page changed
+				} else {
+					return Err(eyre!("Login failed: unexpected page at {}", current_url));
+				}
+			}
+		}
 	}
-
-	// Navigate to target URL
-	log!("Navigating to target URL: {}", target_url);
-	page.goto(target_url).await.map_err(|e| eyre!("Failed to navigate to target: {}", e))?;
-	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-
-	Ok(())
 }
 
 /// Select "Université Clermont Auvergne" from the federation dropdown

@@ -39,6 +39,11 @@ struct Args {
 	#[arg(long)]
 	debug_from_html: bool,
 
+	/// Semi-manual login: hang on unexpected pages, waiting for user to manually resolve (e.g., enter access password)
+	/// Requires --visible to be set
+	#[arg(long)]
+	semi_manual_login: bool,
+
 	#[command(flatten)]
 	settings: SettingsFlags,
 }
@@ -47,6 +52,11 @@ struct Args {
 async fn main() -> Result<()> {
 	clientside!();
 	let args = Args::parse();
+
+	if args.semi_manual_login && !args.visible {
+		panic!("--semi-manual-login requires --visible to be set");
+	}
+
 	let mut config = AppConfig::try_build(args.settings)?;
 
 	log!("Starting Moodle login automation...");
@@ -92,7 +102,7 @@ async fn main() -> Result<()> {
 			log!("\n========== Processing next URL ({}/{}) ==========", idx + 1, urls.len());
 		}
 
-		match process_url(&mut browser, target_url, &mut config, args.ask_llm, args.debug_from_html).await {
+		match process_url(&mut browser, target_url, &mut config, args.ask_llm, args.debug_from_html, args.semi_manual_login).await {
 			Ok((success, _page)) => {
 				// For VPL pages, only continue to next URL if we got 100%
 				if is_vpl_url(target_url) && !success {
@@ -175,7 +185,7 @@ async fn main() -> Result<()> {
 }
 
 /// Process a single URL - returns (success, page) where success indicates if VPL got 100%
-async fn process_url(browser: &mut Browser, target_url: &str, config: &mut AppConfig, ask_llm: bool, debug_from_html: bool) -> Result<(bool, chromiumoxide::Page)> {
+async fn process_url(browser: &mut Browser, target_url: &str, config: &mut AppConfig, ask_llm: bool, debug_from_html: bool, semi_manual_login: bool) -> Result<(bool, chromiumoxide::Page)> {
 	// Create/navigate to page
 	let page = if debug_from_html {
 		let file_url = format!("file://{}", target_url);
@@ -195,7 +205,7 @@ async fn process_url(browser: &mut Browser, target_url: &str, config: &mut AppCo
 		let page = browser.new_page(&start_url).await.map_err(|e| eyre!("Failed to create new page: {}", e))?;
 		page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for initial page load: {}", e))?;
 
-		login_and_navigate(&page, site, target_url, config).await?;
+		login_and_navigate(&page, site, target_url, config, semi_manual_login).await?;
 		page
 	};
 
