@@ -111,11 +111,12 @@ async fn main() -> Result<()> {
 	// If there was an error and visible mode, keep browser open for debugging
 	if let Some(ref err) = processing_error {
 		if args.visible {
-			elog!("Error occurred: {}", err);
+			elog!("Error occurred: {err}");
 			log!("Keeping browser open for debugging. Press Ctrl+C to exit...");
 
 			static SIGINT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+			//SAFETY: no
 			unsafe {
 				libc::signal(libc::SIGINT, sigint_handler_err as *const () as libc::sighandler_t);
 			}
@@ -144,6 +145,7 @@ async fn main() -> Result<()> {
 
 		static SIGINT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+		//SAFETY: no
 		unsafe {
 			libc::signal(libc::SIGINT, sigint_handler as *const () as libc::sighandler_t);
 		}
