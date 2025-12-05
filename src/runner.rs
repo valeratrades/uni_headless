@@ -236,7 +236,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 		first_page = false;
 
 		// Check for confirmation prompts (mark as done buttons) before parsing questions
-		let confirmation_buttons = parse_confirmation_prompts(page).await?;
+		let confirmation_buttons = find_confirmation_buttons(page, false).await?;
 		if !confirmation_buttons.is_empty() {
 			log!("Found {} confirmation prompt(s):", confirmation_buttons.len());
 			for btn in &confirmation_buttons {
@@ -764,83 +764,83 @@ async fn parse_vpl_proposed_grade(page: &Page) -> Result<Option<Percent>> {
 	Ok(Some(Percent(percent)))
 }
 
-/// Parse confirmation prompts (mark as done buttons, submit all buttons) from the page
-/// Returns a list of activity names that have confirmation buttons
-async fn parse_confirmation_prompts(page: &Page) -> Result<Vec<String>> {
-	let script = r#"
-		(function() {
+/// Shared JS helper to check if text matches confirmation keywords
+const CONFIRMATION_MATCH_JS: &str = r#"
+	function isConfirmationText(text) {
+		const t = text.toLowerCase();
+		return t.includes('envoyer') || t.includes('terminer') || t.includes('submit') ||
+		       t.includes('finish') || t.includes('finir') || t.includes('confirm') || t.includes('valider');
+	}
+"#;
+
+/// Find confirmation buttons on the page and optionally click them
+/// Returns a list of button names found
+async fn find_confirmation_buttons(page: &Page, click: bool) -> Result<Vec<String>> {
+	let script = format!(
+		r#"
+		(function() {{
+			{CONFIRMATION_MATCH_JS}
+			const shouldClick = {click};
 			const names = [];
 
 			// Mark as done buttons
 			const markDoneButtons = document.querySelectorAll(
 				'button[data-action="toggle-manual-completion"], button[data-toggletype="manual:mark-done"]'
 			);
-			for (const btn of markDoneButtons) {
+			for (const btn of markDoneButtons) {{
 				const name = btn.getAttribute('data-activityname') || btn.textContent.trim();
 				names.push(name);
-			}
+				if (shouldClick) btn.click();
+			}}
 
-			// Submit all and finish button (quiz summary page)
+			// Submit all and finish buttons (quiz summary page)
 			const submitAllBtns = document.querySelectorAll('button[type="submit"].btn-primary');
-			for (const btn of submitAllBtns) {
-				const text = btn.textContent.trim().toLowerCase();
-				// Match "Tout envoyer et terminer" or similar submit-all buttons
-				if (text.includes('envoyer') || text.includes('terminer') || text.includes('submit') || text.includes('finish')) {
+			for (const btn of submitAllBtns) {{
+				if (isConfirmationText(btn.textContent)) {{
 					names.push(btn.textContent.trim());
-				}
-			}
+					if (shouldClick) btn.click();
+				}}
+			}}
+
+			// Finish attempt button/link on quiz attempt pages (navigates to summary)
+			const finishAttemptBtns = document.querySelectorAll('.mod_quiz-next-nav, button[name="next"], input[name="next"][type="submit"]');
+			for (const btn of finishAttemptBtns) {{
+				const text = btn.textContent?.trim() || btn.value || '';
+				if (isConfirmationText(text)) {{
+					names.push(text || 'Finish attempt');
+					if (shouldClick) btn.click();
+				}}
+			}}
+
+			// Also check for "Finish attempt..." links in the quiz navigation
+			const finishLinks = document.querySelectorAll('a.endtestlink, a[href*="summary"]');
+			for (const link of finishLinks) {{
+				if (isConfirmationText(link.textContent)) {{
+					names.push(link.textContent.trim());
+					if (shouldClick) link.click();
+				}}
+			}}
 
 			return JSON.stringify(names);
-		})()
-	"#;
+		}})()
+	"#
+	);
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to parse confirmation prompts: {}", e))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to find confirmation buttons: {}", e))?;
 	let json_str = result.value().and_then(|v| v.as_str()).unwrap_or("[]");
 	let names: Vec<String> = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse JSON: {}", e))?;
 
+	if click && !names.is_empty() {
+		log!("Clicked {} confirmation button(s)", names.len());
+	}
+
 	Ok(names)
-}
-
-/// Click all confirmation buttons (mark as done, submit all) on the page
-async fn click_confirmation_buttons(page: &Page) -> Result<()> {
-	let script = r#"
-		(function() {
-			let clicked = 0;
-
-			// Mark as done buttons
-			const markDoneButtons = document.querySelectorAll(
-				'button[data-action="toggle-manual-completion"], button[data-toggletype="manual:mark-done"]'
-			);
-			for (const btn of markDoneButtons) {
-				btn.click();
-				clicked++;
-			}
-
-			// Submit all and finish button (quiz summary page)
-			const submitAllBtns = document.querySelectorAll('button[type="submit"].btn-primary');
-			for (const btn of submitAllBtns) {
-				const text = btn.textContent.trim().toLowerCase();
-				if (text.includes('envoyer') || text.includes('terminer') || text.includes('submit') || text.includes('finish')) {
-					btn.click();
-					clicked++;
-				}
-			}
-
-			return clicked;
-		})()
-	"#;
-
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click confirmation buttons: {}", e))?;
-	let clicked = result.value().and_then(|v| v.as_i64()).unwrap_or(0);
-	log!("Clicked {} confirmation button(s)", clicked);
-
-	Ok(())
 }
 
 /// Click all confirmation buttons, then wait and handle any modal that appears
 /// Returns true if a modal confirmation was clicked (quiz is done)
 async fn click_all_confirmations(page: &Page) -> Result<bool> {
-	click_confirmation_buttons(page).await?;
+	find_confirmation_buttons(page, true).await?;
 	// Wait for potential modal to appear
 	tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 	click_modal_confirmation(page).await
@@ -849,20 +849,25 @@ async fn click_all_confirmations(page: &Page) -> Result<bool> {
 /// Click confirmation button in modal dialogs (e.g., "Tout envoyer et terminer" popup)
 /// Returns true if a modal confirmation was clicked
 async fn click_modal_confirmation(page: &Page) -> Result<bool> {
-	let script = r#"
-		(function() {
-			// Look for modal confirmation buttons
-			const modalBtns = document.querySelectorAll('.modal button.btn-primary, .modal-dialog button.btn-primary, [role="dialog"] button.btn-primary');
-			for (const btn of modalBtns) {
-				const text = btn.textContent.trim().toLowerCase();
-				if (text.includes('envoyer') || text.includes('terminer') || text.includes('submit') || text.includes('finish') || text.includes('confirm') || text.includes('ok')) {
+	let script = format!(
+		r#"
+		(function() {{
+			{CONFIRMATION_MATCH_JS}
+			// Look for modal confirmation buttons - try multiple selectors for different Moodle versions
+			const modalBtns = document.querySelectorAll(
+				'.modal button.btn-primary, .modal-dialog button.btn-primary, [role="dialog"] button.btn-primary, ' +
+				'.moodle-dialogue button.btn-primary, .yui3-panel button.btn-primary, [data-region="modal"] button.btn-primary'
+			);
+			for (const btn of modalBtns) {{
+				if (isConfirmationText(btn.textContent)) {{
 					btn.click();
 					return true;
-				}
-			}
+				}}
+			}}
 			return false;
-		})()
-	"#;
+		}})()
+	"#
+	);
 
 	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click modal confirmation: {}", e))?;
 	let clicked = result.value().and_then(|v| v.as_bool()) == Some(true);
