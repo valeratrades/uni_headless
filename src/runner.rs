@@ -245,7 +245,10 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 
 			if config.auto_submit {
 				log!("Auto-clicking confirmation buttons...");
-				click_all_confirmations(page).await?;
+				if click_all_confirmations(page).await? {
+					// Modal confirmation clicked = quiz submitted, we're done
+					return Ok(());
+				}
 			} else {
 				log!("(use --auto-submit flag to have these auto-click)");
 			}
@@ -255,6 +258,11 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 
 		if questions.is_empty() {
 			log!("No more questions found. Waiting for manual intervention or page change...");
+			// Run stop hook if configured
+			if let Some(ref hook) = config.stop_hook {
+				log!("Running stop hook: {}", hook);
+				let _ = tokio::process::Command::new("sh").arg("-c").arg(hook).spawn();
+			}
 			wait_for_page_change(page).await?;
 			continue;
 		}
@@ -825,16 +833,17 @@ async fn click_confirmation_buttons(page: &Page) -> Result<()> {
 }
 
 /// Click all confirmation buttons, then wait and handle any modal that appears
-async fn click_all_confirmations(page: &Page) -> Result<()> {
+/// Returns true if a modal confirmation was clicked (quiz is done)
+async fn click_all_confirmations(page: &Page) -> Result<bool> {
 	click_confirmation_buttons(page).await?;
 	// Wait for potential modal to appear
 	tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-	click_modal_confirmation(page).await?;
-	Ok(())
+	click_modal_confirmation(page).await
 }
 
 /// Click confirmation button in modal dialogs (e.g., "Tout envoyer et terminer" popup)
-async fn click_modal_confirmation(page: &Page) -> Result<()> {
+/// Returns true if a modal confirmation was clicked
+async fn click_modal_confirmation(page: &Page) -> Result<bool> {
 	let script = r#"
 		(function() {
 			// Look for modal confirmation buttons
@@ -851,11 +860,12 @@ async fn click_modal_confirmation(page: &Page) -> Result<()> {
 	"#;
 
 	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click modal confirmation: {}", e))?;
-	if result.value().and_then(|v| v.as_bool()) == Some(true) {
+	let clicked = result.value().and_then(|v| v.as_bool()) == Some(true);
+	if clicked {
 		log!("Clicked modal confirmation button");
 	}
 
-	Ok(())
+	Ok(clicked)
 }
 
 /// Parse questions from the quiz page

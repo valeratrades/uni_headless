@@ -7,6 +7,9 @@ pub struct AppConfig {
 	/// Auto-submit all LLM answers without confirmation
 	#[serde(default)]
 	pub auto_submit: bool,
+	/// Command to run when no questions are found (e.g., to notify user)
+	#[serde(default)]
+	pub stop_hook: Option<String>,
 }
 
 impl AppConfig {
