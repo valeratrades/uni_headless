@@ -228,7 +228,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 
 		if !first_page {
 			if let Some(num) = page_num {
-				log!("\n==================== Page {} ====================", num);
+				log!("\n==================== Page {num} ====================");
 			} else {
 				log!("\n================================================");
 			}
@@ -240,7 +240,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 		if !confirmation_buttons.is_empty() {
 			log!("Found {} confirmation prompt(s):", confirmation_buttons.len());
 			for btn in &confirmation_buttons {
-				log!("  - {}", btn);
+				log!("  - {btn}");
 			}
 
 			if config.auto_submit {
