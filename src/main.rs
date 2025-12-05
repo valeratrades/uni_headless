@@ -39,10 +39,10 @@ struct Args {
 	#[arg(long)]
 	debug_from_html: bool,
 
-	/// Semi-manual login: hang on unexpected pages, waiting for user to manually resolve (e.g., enter access password)
-	/// Requires --visible to be set
+	/// Manual login: skip automatic login, wait for user to manually navigate to target URL.
+	/// Requires --visible to be set.
 	#[arg(long)]
-	semi_manual_login: bool,
+	manual_login: bool,
 
 	#[command(flatten)]
 	settings: SettingsFlags,
@@ -53,8 +53,8 @@ async fn main() -> Result<()> {
 	clientside!();
 	let args = Args::parse();
 
-	if args.semi_manual_login && !args.visible {
-		panic!("--semi-manual-login requires --visible to be set");
+	if args.manual_login && !args.visible {
+		panic!("--manual-login requires --visible to be set");
 	}
 
 	let mut config = AppConfig::try_build(args.settings)?;
@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
 			log!("\n========== Processing next URL ({}/{}) ==========", idx + 1, urls.len());
 		}
 
-		match process_url(&mut browser, target_url, &mut config, args.ask_llm, args.debug_from_html, args.semi_manual_login).await {
+		match process_url(&mut browser, target_url, &mut config, args.ask_llm, args.debug_from_html, args.manual_login).await {
 			Ok((success, _page)) => {
 				// For VPL pages, only continue to next URL if we got 100%
 				if is_vpl_url(target_url) && !success {
@@ -185,7 +185,7 @@ async fn main() -> Result<()> {
 }
 
 /// Process a single URL - returns (success, page) where success indicates if VPL got 100%
-async fn process_url(browser: &mut Browser, target_url: &str, config: &mut AppConfig, ask_llm: bool, debug_from_html: bool, semi_manual_login: bool) -> Result<(bool, chromiumoxide::Page)> {
+async fn process_url(browser: &mut Browser, target_url: &str, config: &mut AppConfig, ask_llm: bool, debug_from_html: bool, manual_login: bool) -> Result<(bool, chromiumoxide::Page)> {
 	// Create/navigate to page
 	let page = if debug_from_html {
 		let file_url = format!("file://{}", target_url);
@@ -193,19 +193,33 @@ async fn process_url(browser: &mut Browser, target_url: &str, config: &mut AppCo
 		let page = browser.new_page(&file_url).await.map_err(|e| eyre!("Failed to open file: {}", e))?;
 		tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 		page
+	} else if manual_login {
+		log!("Manual login mode: waiting for you to navigate to target URL...");
+		log!("Target: {}", target_url);
+
+		let page = browser.new_page(target_url).await.map_err(|e| eyre!("Failed to create new page: {}", e))?;
+
+		let target_base = target_url.split('?').next().unwrap_or(target_url);
+		loop {
+			let current_url = page.url().await.ok().flatten().unwrap_or_default();
+			let current_base = current_url.split('?').next().unwrap_or(&current_url);
+			if current_base == target_base {
+				log!("Target URL reached");
+				break;
+			}
+			tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+		}
+		page
 	} else {
 		let site = Site::detect(target_url);
 		log!("Detected site: {}", site.name());
 
-		let start_url = match site {
-			Site::Caseine => target_url.to_string(),
-			Site::UcaMoodle => "https://moodle2025.uca.fr/".to_string(),
-		};
+		let start_url = target_url.to_string();
 
 		let page = browser.new_page(&start_url).await.map_err(|e| eyre!("Failed to create new page: {}", e))?;
 		page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for initial page load: {}", e))?;
 
-		login_and_navigate(&page, site, target_url, config, semi_manual_login).await?;
+		login_and_navigate(&page, site, target_url, config).await?;
 		page
 	};
 

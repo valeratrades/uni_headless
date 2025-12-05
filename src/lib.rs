@@ -47,6 +47,28 @@ pub struct RequiredFile {
 	pub content: String,
 }
 
+/// Represents a single dropdown in a matching question
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MatchItem {
+	/// The prompt text for this item (what to match)
+	pub prompt: String,
+	/// The select element's name attribute (for form submission)
+	pub select_name: String,
+	/// Available options in the dropdown
+	pub options: Vec<MatchOption>,
+	/// Currently selected value (0 = none selected)
+	pub selected_value: String,
+}
+
+/// An option in a matching dropdown
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MatchOption {
+	/// The value attribute
+	pub value: String,
+	/// The display text
+	pub text: String,
+}
+
 /// Represents different types of quiz questions
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Question {
@@ -70,6 +92,28 @@ pub enum Question {
 		#[serde(default)]
 		images: Vec<Image>,
 	},
+	/// Short answer / text response question (free text input)
+	ShortAnswer {
+		/// The question text/prompt
+		question_text: String,
+		/// The input element's name attribute (for form submission)
+		input_name: String,
+		/// Current answer value (if any)
+		current_answer: String,
+		/// Images in the question
+		#[serde(default)]
+		images: Vec<Image>,
+	},
+	/// Matching question with multiple dropdowns
+	Matching {
+		/// The question text/prompt
+		question_text: String,
+		/// Items to match (each has a prompt and dropdown)
+		items: Vec<MatchItem>,
+		/// Images in the question
+		#[serde(default)]
+		images: Vec<Image>,
+	},
 	/// Code submission (VPL - Virtual Programming Lab)
 	CodeSubmission {
 		/// The problem description/statement
@@ -88,23 +132,30 @@ impl Question {
 	/// Extract question text for display
 	pub fn question_text(&self) -> &str {
 		match self {
-			Question::SingleChoice { question_text, .. } | Question::MultiChoice { question_text, .. } => question_text,
+			Question::SingleChoice { question_text, .. }
+			| Question::MultiChoice { question_text, .. }
+			| Question::ShortAnswer { question_text, .. }
+			| Question::Matching { question_text, .. } => question_text,
 			Question::CodeSubmission { description, .. } => description,
 		}
 	}
 
-	/// Get choices for this question (empty for CodeSubmission)
+	/// Get choices for this question (empty for CodeSubmission, ShortAnswer, and Matching)
 	pub fn choices(&self) -> &[Choice] {
 		match self {
 			Question::SingleChoice { choices, .. } | Question::MultiChoice { choices, .. } => choices,
-			Question::CodeSubmission { .. } => &[],
+			Question::CodeSubmission { .. } | Question::ShortAnswer { .. } | Question::Matching { .. } => &[],
 		}
 	}
 
 	/// Get images in the question text (not in choices)
 	pub fn images(&self) -> &[Image] {
 		match self {
-			Question::SingleChoice { images, .. } | Question::MultiChoice { images, .. } | Question::CodeSubmission { images, .. } => images,
+			Question::SingleChoice { images, .. }
+			| Question::MultiChoice { images, .. }
+			| Question::ShortAnswer { images, .. }
+			| Question::Matching { images, .. }
+			| Question::CodeSubmission { images, .. } => images,
 		}
 	}
 
@@ -116,6 +167,32 @@ impl Question {
 	/// Returns true if this is a code submission question
 	pub fn is_code_submission(&self) -> bool {
 		matches!(self, Question::CodeSubmission { .. })
+	}
+
+	/// Returns true if this is a short answer (text response) question
+	pub fn is_short_answer(&self) -> bool {
+		matches!(self, Question::ShortAnswer { .. })
+	}
+
+	/// Get the input name for short answer questions
+	pub fn short_answer_input_name(&self) -> Option<&str> {
+		match self {
+			Question::ShortAnswer { input_name, .. } => Some(input_name),
+			_ => None,
+		}
+	}
+
+	/// Returns true if this is a matching question
+	pub fn is_matching(&self) -> bool {
+		matches!(self, Question::Matching { .. })
+	}
+
+	/// Get match items for matching questions
+	pub fn match_items(&self) -> &[MatchItem] {
+		match self {
+			Question::Matching { items, .. } => items,
+			_ => &[],
+		}
 	}
 
 	/// Get required files for code submission
@@ -150,6 +227,23 @@ impl fmt::Display for Question {
 				writeln!(f)?;
 				for (i, choice) in choices.iter().enumerate() {
 					writeln!(f, "[ ] {}. {}", i + 1, choice.text)?;
+				}
+			}
+			Question::ShortAnswer { question_text, current_answer, .. } => {
+				writeln!(f, "{}", question_text)?;
+				writeln!(f)?;
+				if current_answer.is_empty() {
+					writeln!(f, "[____________________]")?;
+				} else {
+					writeln!(f, "[{}]", current_answer)?;
+				}
+			}
+			Question::Matching { question_text, items, .. } => {
+				writeln!(f, "{}", question_text)?;
+				writeln!(f)?;
+				for item in items {
+					let selected = item.options.iter().find(|o| o.value == item.selected_value).map(|o| o.text.as_str()).unwrap_or("___");
+					writeln!(f, "  {} -> [{}]", item.prompt, selected)?;
 				}
 			}
 			Question::CodeSubmission { description, required_files, .. } => {

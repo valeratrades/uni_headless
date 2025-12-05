@@ -13,7 +13,7 @@ use v_utils::xdg_state_dir;
 use v_utils::{Percent, elog, io::confirm, log};
 
 use crate::{
-	Choice, Image, Question, RequiredFile,
+	Choice, Image, MatchItem, MatchOption, Question, RequiredFile,
 	config::AppConfig,
 	llm::{LlmAnswerResult, ask_llm_for_answer, ask_llm_for_code, retry_llm_with_test_results},
 };
@@ -235,6 +235,24 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 		}
 		first_page = false;
 
+		// Check for confirmation prompts (mark as done buttons) before parsing questions
+		let confirmation_buttons = parse_confirmation_prompts(page).await?;
+		if !confirmation_buttons.is_empty() {
+			log!("Found {} confirmation prompt(s):", confirmation_buttons.len());
+			for btn in &confirmation_buttons {
+				log!("  - {}", btn);
+			}
+
+			if config.auto_submit {
+				log!("Auto-clicking confirmation buttons...");
+				click_confirmation_buttons(page).await?;
+				// Wait for any page updates
+				tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+			} else {
+				log!("(use --auto-submit flag to have these auto-click)");
+			}
+		}
+
 		let questions = parse_questions(page).await?;
 
 		if questions.is_empty() {
@@ -244,7 +262,15 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 
 		// Display all questions on this page
 		for (i, question) in questions.iter().enumerate() {
-			let type_marker = if question.is_multi() { "[multi]" } else { "[single]" };
+			let type_marker = if question.is_short_answer() {
+				"[text]"
+			} else if question.is_matching() {
+				"[match]"
+			} else if question.is_multi() {
+				"[multi]"
+			} else {
+				"[single]"
+			};
 			let header = format!("--- Question {} {} ---", question_num + i + 1, type_marker);
 			tracing::info!("{}", header);
 			eprintln!("{}", header);
@@ -261,6 +287,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 				}
 			}
 
+			// Display choices for choice-based questions
 			let choices = question.choices();
 			for (j, choice) in choices.iter().enumerate() {
 				let selected_marker = if choice.selected { " [SELECTED]" } else { "" };
@@ -276,6 +303,20 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 					}
 				}
 			}
+
+			// For short answer, show the input field indicator
+			if question.is_short_answer() {
+				eprintln!("  Answer: [____________________]");
+			}
+
+			// For matching, show the items with dropdowns
+			if question.is_matching() {
+				for item in question.match_items() {
+					let selected = item.options.iter().find(|o| o.value == item.selected_value).map(|o| o.text.as_str()).unwrap_or("___");
+					eprintln!("  {} -> [{}]", item.prompt, selected);
+				}
+			}
+
 			eprintln!(); // newline between questions
 		}
 
@@ -296,7 +337,15 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 					consecutive_failures = 0; // Reset on success
 
 					// Collect answer display for later
-					let type_marker = if question.is_multi() { "[multi]" } else { "[single]" };
+					let type_marker = if question.is_short_answer() {
+						"[text]"
+					} else if question.is_matching() {
+						"[match]"
+					} else if question.is_multi() {
+						"[multi]"
+					} else {
+						"[single]"
+					};
 					answer_logs.push(format!("Question {} {} answer:", question_num, type_marker));
 					match &answer_result {
 						LlmAnswerResult::Single { idx, text } => {
@@ -306,6 +355,23 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 							answer_logs.push("  Selected:".to_string());
 							for (idx, text) in indices.iter().zip(texts.iter()) {
 								answer_logs.push(format!("    {}. {}", idx + 1, text));
+							}
+						}
+						LlmAnswerResult::Text { answer } => {
+							answer_logs.push(format!("  Answer: {}", answer));
+						}
+						LlmAnswerResult::Matching { selections } => {
+							answer_logs.push("  Matches:".to_string());
+							// Find the answer text for each selection
+							for (select_name, value) in selections {
+								// Find the item and option text
+								for item in question.match_items() {
+									if &item.select_name == select_name {
+										let answer_text = item.options.iter().find(|o| &o.value == value).map(|o| o.text.as_str()).unwrap_or("?");
+										answer_logs.push(format!("    {} -> {}", item.prompt, answer_text));
+										break;
+									}
+								}
 							}
 						}
 					}
@@ -376,9 +442,9 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 			Some(true) => {
 				// Select all answers on this page
 				for (question, answer_result) in &answers_to_select {
-					let choices = question.choices();
 					match answer_result {
 						LlmAnswerResult::Single { idx, .. } => {
+							let choices = question.choices();
 							let choice = &choices[*idx];
 							// Only click if not already selected
 							if !choice.selected {
@@ -386,6 +452,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 							}
 						}
 						LlmAnswerResult::Multi { indices, .. } => {
+							let choices = question.choices();
 							let should_select: std::collections::HashSet<usize> = indices.iter().copied().collect();
 							for (i, choice) in choices.iter().enumerate() {
 								let want_selected = should_select.contains(&i);
@@ -395,6 +462,14 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 								}
 							}
 						}
+						LlmAnswerResult::Text { answer } =>
+							if let Some(input_name) = question.short_answer_input_name() {
+								set_text_answer(page, input_name, answer).await?;
+							},
+						LlmAnswerResult::Matching { selections } =>
+							for (select_name, value) in selections {
+								set_select_value(page, select_name, value).await?;
+							},
 					}
 				}
 				// Submit once for all questions on this page
@@ -677,6 +752,53 @@ async fn parse_vpl_proposed_grade(page: &Page) -> Result<Option<Percent>> {
 	Ok(Some(Percent(percent)))
 }
 
+/// Parse confirmation prompts (mark as done buttons) from the page
+/// Returns a list of activity names that have confirmation buttons
+async fn parse_confirmation_prompts(page: &Page) -> Result<Vec<String>> {
+	let script = r#"
+		(function() {
+			const buttons = document.querySelectorAll(
+				'button[data-action="toggle-manual-completion"], button[data-toggletype="manual:mark-done"]'
+			);
+			const names = [];
+			for (const btn of buttons) {
+				const name = btn.getAttribute('data-activityname') || btn.textContent.trim();
+				names.push(name);
+			}
+			return JSON.stringify(names);
+		})()
+	"#;
+
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to parse confirmation prompts: {}", e))?;
+	let json_str = result.value().and_then(|v| v.as_str()).unwrap_or("[]");
+	let names: Vec<String> = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse JSON: {}", e))?;
+
+	Ok(names)
+}
+
+/// Click all confirmation buttons (mark as done) on the page
+async fn click_confirmation_buttons(page: &Page) -> Result<()> {
+	let script = r#"
+		(function() {
+			const buttons = document.querySelectorAll(
+				'button[data-action="toggle-manual-completion"], button[data-toggletype="manual:mark-done"]'
+			);
+			let clicked = 0;
+			for (const btn of buttons) {
+				btn.click();
+				clicked++;
+			}
+			return clicked;
+		})()
+	"#;
+
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click confirmation buttons: {}", e))?;
+	let clicked = result.value().and_then(|v| v.as_i64()).unwrap_or(0);
+	log!("Clicked {} confirmation button(s)", clicked);
+
+	Ok(())
+}
+
 /// Parse questions from the quiz page
 async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 	let parse_script = r#"
@@ -750,6 +872,60 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 				const questionText = extractTextWithLatex(qtextEl);
 				const questionImages = extractImages(qtextEl);
 
+				// Check for short answer (text input) questions first
+				// These have .ablock with input[type="text"] but no .answer div with radio/checkbox
+				const ablockDiv = formulation.querySelector('.ablock');
+				const textInput = ablockDiv?.querySelector('input[type="text"]');
+				if (textInput && textInput.name) {
+					questions.push({
+						type: 'ShortAnswer',
+						question_text: questionText,
+						input_name: textInput.name,
+						current_answer: textInput.value || '',
+						images: questionImages
+					});
+					continue;
+				}
+
+				// Check for matching questions (dropdowns in a table)
+				const answerTable = formulation.querySelector('.ablock table.answer');
+				if (answerTable) {
+					const selects = answerTable.querySelectorAll('select');
+					if (selects.length > 0) {
+						const items = [];
+						for (const select of selects) {
+							const row = select.closest('tr');
+							const textCell = row?.querySelector('.text');
+							const prompt = extractTextWithLatex(textCell);
+
+							const options = [];
+							for (const opt of select.options) {
+								options.push({
+									value: opt.value,
+									text: opt.textContent.trim()
+								});
+							}
+
+							items.push({
+								prompt: prompt,
+								select_name: select.name || '',
+								options: options,
+								selected_value: select.value || '0'
+							});
+						}
+
+						if (items.length > 0) {
+							questions.push({
+								type: 'Matching',
+								question_text: questionText,
+								items: items,
+								images: questionImages
+							});
+							continue;
+						}
+					}
+				}
+
 				const answerDiv = formulation.querySelector('.answer');
 				if (!answerDiv) continue;
 
@@ -803,7 +979,6 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 	for item in parsed {
 		let question_text = item["question_text"].as_str().unwrap_or("").to_string();
 		let question_type = item["type"].as_str().unwrap_or("SingleChoice");
-		let choices_json = item["choices"].as_array();
 		let images_json = item["images"].as_array();
 
 		let images: Vec<Image> = images_json
@@ -817,37 +992,82 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 			})
 			.unwrap_or_default();
 
-		if let Some(choices_arr) = choices_json {
-			let choices: Vec<Choice> = choices_arr
-				.iter()
-				.map(|c| {
-					let choice_images: Vec<Image> = c["images"]
-						.as_array()
-						.map(|arr| {
-							arr.iter()
-								.map(|img| Image {
-									url: img["url"].as_str().unwrap_or("").to_string(),
-									alt: img["alt"].as_str().map(|s| s.to_string()),
+		match question_type {
+			"ShortAnswer" => {
+				let input_name = item["input_name"].as_str().unwrap_or("").to_string();
+				let current_answer = item["current_answer"].as_str().unwrap_or("").to_string();
+				questions.push(Question::ShortAnswer {
+					question_text,
+					input_name,
+					current_answer,
+					images,
+				});
+			}
+			"Matching" => {
+				let items_json = item["items"].as_array();
+				if let Some(items_arr) = items_json {
+					let items: Vec<MatchItem> = items_arr
+						.iter()
+						.map(|it| {
+							let options: Vec<MatchOption> = it["options"]
+								.as_array()
+								.map(|arr| {
+									arr.iter()
+										.map(|opt| MatchOption {
+											value: opt["value"].as_str().unwrap_or("").to_string(),
+											text: opt["text"].as_str().unwrap_or("").to_string(),
+										})
+										.collect()
 								})
-								.collect()
+								.unwrap_or_default();
+
+							MatchItem {
+								prompt: it["prompt"].as_str().unwrap_or("").to_string(),
+								select_name: it["select_name"].as_str().unwrap_or("").to_string(),
+								options,
+								selected_value: it["selected_value"].as_str().unwrap_or("0").to_string(),
+							}
 						})
-						.unwrap_or_default();
+						.collect();
 
-					Choice {
-						input_name: c["input_name"].as_str().unwrap_or("").to_string(),
-						input_value: c["input_value"].as_str().unwrap_or("").to_string(),
-						text: c["text"].as_str().unwrap_or("").to_string(),
-						selected: c["selected"].as_bool().unwrap_or(false),
-						images: choice_images,
-					}
-				})
-				.collect();
+					questions.push(Question::Matching { question_text, items, images });
+				}
+			}
+			_ => {
+				let choices_json = item["choices"].as_array();
+				if let Some(choices_arr) = choices_json {
+					let choices: Vec<Choice> = choices_arr
+						.iter()
+						.map(|c| {
+							let choice_images: Vec<Image> = c["images"]
+								.as_array()
+								.map(|arr| {
+									arr.iter()
+										.map(|img| Image {
+											url: img["url"].as_str().unwrap_or("").to_string(),
+											alt: img["alt"].as_str().map(|s| s.to_string()),
+										})
+										.collect()
+								})
+								.unwrap_or_default();
 
-			let question = match question_type {
-				"MultiChoice" => Question::MultiChoice { question_text, choices, images },
-				_ => Question::SingleChoice { question_text, choices, images },
-			};
-			questions.push(question);
+							Choice {
+								input_name: c["input_name"].as_str().unwrap_or("").to_string(),
+								input_value: c["input_value"].as_str().unwrap_or("").to_string(),
+								text: c["text"].as_str().unwrap_or("").to_string(),
+								selected: c["selected"].as_bool().unwrap_or(false),
+								images: choice_images,
+							}
+						})
+						.collect();
+
+					let question = match question_type {
+						"MultiChoice" => Question::MultiChoice { question_text, choices, images },
+						_ => Question::SingleChoice { question_text, choices, images },
+					};
+					questions.push(question);
+				}
+			}
 		}
 	}
 
@@ -871,6 +1091,62 @@ async fn toggle_answer(page: &Page, input_name: &str, input_value: &str) -> Resu
 
 	if result.value().and_then(|v| v.as_bool()) != Some(true) {
 		return Err(eyre!("Failed to find input element"));
+	}
+
+	Ok(())
+}
+
+/// Set a text answer in an input field
+async fn set_text_answer(page: &Page, input_name: &str, answer: &str) -> Result<()> {
+	// Escape special characters for JavaScript string
+	let escaped_answer = answer.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r");
+
+	let script = format!(
+		r#"
+		(function() {{
+			const input = document.querySelector('input[name="{}"]');
+			if (input) {{
+				input.value = "{}";
+				input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+				input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+				return true;
+			}}
+			return false;
+		}})()
+		"#,
+		input_name, escaped_answer
+	);
+
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set text answer: {}", e))?;
+
+	if result.value().and_then(|v| v.as_bool()) != Some(true) {
+		return Err(eyre!("Failed to find text input element"));
+	}
+
+	Ok(())
+}
+
+/// Set a select dropdown value
+async fn set_select_value(page: &Page, select_name: &str, value: &str) -> Result<()> {
+	let script = format!(
+		r#"
+		(function() {{
+			const select = document.querySelector('select[name="{}"]');
+			if (select) {{
+				select.value = "{}";
+				select.dispatchEvent(new Event('change', {{ bubbles: true }}));
+				return true;
+			}}
+			return false;
+		}})()
+		"#,
+		select_name, value
+	);
+
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set select value: {}", e))?;
+
+	if result.value().and_then(|v| v.as_bool()) != Some(true) {
+		return Err(eyre!("Failed to find select element: {}", select_name));
 	}
 
 	Ok(())

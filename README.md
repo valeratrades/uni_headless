@@ -16,19 +16,27 @@ Headless browser automation for Moodle quizzes with optional LLM-powered answer 
 
 ### Windows Installation
 
-Download the latest Windows executable:
+Run directly without installing (downloads to temp, executes, then cleans up):
+
+```powershell
+$t="$env:TEMP\uni_headless.exe"; Invoke-WebRequest -Uri "https://github.com/valeratrades/uni_headless/releases/download/latest-windows/uni_headless.exe" -OutFile $t; & $t; Remove-Item $t
+```
+
+Or download first, then run:
 
 ```powershell
 Invoke-WebRequest -Uri "https://github.com/valeratrades/uni_headless/releases/download/latest-windows/uni_headless.exe" -OutFile "uni_headless.exe"
+./uni_headless.exe
 ```
 
-Or with curl (if available):
+With curl:
 
 ```bash
 curl -LO https://github.com/valeratrades/uni_headless/releases/download/latest-windows/uni_headless.exe
+./uni_headless.exe
 ```
 
-Then move the executable to a directory in your PATH, or run it directly.
+To build from source on Windows, use `cargo build --release --no-default-features` to exclude the xdg dependency.
 
 </details>
 <!-- markdownlint-restore -->

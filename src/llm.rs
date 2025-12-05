@@ -21,10 +21,41 @@ struct LlmMultiAnswer {
 	response_numbers: Vec<usize>,
 }
 
+/// LLM response for short answer questions
+#[derive(Debug, serde::Deserialize)]
+struct LlmTextAnswer {
+	answer: String,
+}
+
+/// LLM response for matching questions
+#[derive(Debug, serde::Deserialize)]
+struct LlmMatchingAnswer {
+	matches: Vec<LlmMatchPair>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LlmMatchPair {
+	prompt: String,
+	answer: String,
+}
+
 /// Result of LLM answering a question
 pub enum LlmAnswerResult {
-	Single { idx: usize, text: String },
-	Multi { indices: Vec<usize>, texts: Vec<String> },
+	Single {
+		idx: usize,
+		text: String,
+	},
+	Multi {
+		indices: Vec<usize>,
+		texts: Vec<String>,
+	},
+	Text {
+		answer: String,
+	},
+	/// Matching: vector of (select_name, value_to_select)
+	Matching {
+		selections: Vec<(String, String)>,
+	},
 }
 
 /// LLM response for code submission questions
@@ -77,9 +108,128 @@ async fn fetch_image_as_base64(page: &Page, url: &str) -> Result<(String, String
 	Ok((base64, media_type))
 }
 
-/// Ask the LLM to answer a multiple-choice question
+/// Ask the LLM to answer a quiz question (multiple-choice or short answer)
 pub async fn ask_llm_for_answer(page: &Page, question: &Question) -> Result<LlmAnswerResult> {
 	let question_text = question.question_text();
+
+	// Handle short answer questions
+	if question.is_short_answer() {
+		let prompt = format!(
+			r#"You are answering a short answer question. Provide a concise, direct answer.
+
+Question:
+{question_text}
+
+Respond with JSON only, no markdown, in this exact format:
+{{"answer": "<your concise answer>"}}"#
+		);
+
+		let mut client = LlmClient::new().model(Model::Medium).max_tokens(128).force_json();
+
+		// Attach question images
+		for img in question.images() {
+			match fetch_image_as_base64(page, &img.url).await {
+				Ok((base64, media_type)) => {
+					client = client.append_file(base64, media_type);
+				}
+				Err(e) => {
+					tracing::warn!("Failed to fetch image for LLM: {}", e);
+				}
+			}
+		}
+
+		let mut conv = Conversation::new();
+		conv.add(Role::User, prompt);
+
+		let response = client.conversation(&conv).await?;
+		tracing::debug!("LLM raw response: {}", response.text);
+
+		let json_str = response.text.trim();
+		let answer: LlmTextAnswer = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, json_str))?;
+
+		return Ok(LlmAnswerResult::Text { answer: answer.answer });
+	}
+
+	// Handle matching questions
+	if question.is_matching() {
+		let items = question.match_items();
+
+		// Build the prompt with all items and their options
+		let mut items_text = String::new();
+		let mut all_options: Vec<&str> = Vec::new();
+
+		for (i, item) in items.iter().enumerate() {
+			items_text.push_str(&format!("{}. {}\n", i + 1, item.prompt));
+			// Collect unique options (skip "Choisir…" which has value "0")
+			for opt in &item.options {
+				if opt.value != "0" && !all_options.contains(&opt.text.as_str()) {
+					all_options.push(&opt.text);
+				}
+			}
+		}
+
+		let options_text = all_options.iter().map(|o| format!("- {}", o)).collect::<Vec<_>>().join("\n");
+
+		let prompt = format!(
+			r#"You are answering a matching question. Match each item to the correct option.
+
+Question:
+{question_text}
+
+Items to match:
+{items_text}
+Available options:
+{options_text}
+
+Respond with JSON only, no markdown, in this exact format:
+{{"matches": [{{"prompt": "<item prompt text>", "answer": "<matching option text>"}}]}}"#
+		);
+
+		let mut client = LlmClient::new().model(Model::Medium).max_tokens(512).force_json();
+
+		// Attach question images
+		for img in question.images() {
+			match fetch_image_as_base64(page, &img.url).await {
+				Ok((base64, media_type)) => {
+					client = client.append_file(base64, media_type);
+				}
+				Err(e) => {
+					tracing::warn!("Failed to fetch image for LLM: {}", e);
+				}
+			}
+		}
+
+		let mut conv = Conversation::new();
+		conv.add(Role::User, prompt);
+
+		let response = client.conversation(&conv).await?;
+		tracing::debug!("LLM raw response: {}", response.text);
+
+		let json_str = response.text.trim();
+		let answer: LlmMatchingAnswer = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, json_str))?;
+
+		// Convert LLM answer to selections (select_name, value)
+		let mut selections = Vec::new();
+		for match_pair in answer.matches {
+			// Find the item that matches this prompt
+			for item in items {
+				if item.prompt.contains(&match_pair.prompt) || match_pair.prompt.contains(&item.prompt) {
+					// Find the option value for the answer text
+					for opt in &item.options {
+						if opt.text == match_pair.answer {
+							selections.push((item.select_name.clone(), opt.value.clone()));
+							break;
+						}
+					}
+					break;
+				}
+			}
+		}
+
+		return Ok(LlmAnswerResult::Matching { selections });
+	}
+
+	// Handle multiple-choice questions
 	let choices = question.choices();
 
 	let mut options_text = String::new();
