@@ -245,9 +245,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 
 			if config.auto_submit {
 				log!("Auto-clicking confirmation buttons...");
-				click_confirmation_buttons(page).await?;
-				// Wait for any page updates
-				tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+				click_all_confirmations(page).await?;
 			} else {
 				log!("(use --auto-submit flag to have these auto-click)");
 			}
@@ -256,8 +254,9 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 		let questions = parse_questions(page).await?;
 
 		if questions.is_empty() {
-			log!("No more questions found.");
-			break;
+			log!("No more questions found. Waiting for manual intervention or page change...");
+			wait_for_page_change(page).await?;
+			continue;
 		}
 
 		// Display all questions on this page
@@ -752,19 +751,32 @@ async fn parse_vpl_proposed_grade(page: &Page) -> Result<Option<Percent>> {
 	Ok(Some(Percent(percent)))
 }
 
-/// Parse confirmation prompts (mark as done buttons) from the page
+/// Parse confirmation prompts (mark as done buttons, submit all buttons) from the page
 /// Returns a list of activity names that have confirmation buttons
 async fn parse_confirmation_prompts(page: &Page) -> Result<Vec<String>> {
 	let script = r#"
 		(function() {
-			const buttons = document.querySelectorAll(
+			const names = [];
+
+			// Mark as done buttons
+			const markDoneButtons = document.querySelectorAll(
 				'button[data-action="toggle-manual-completion"], button[data-toggletype="manual:mark-done"]'
 			);
-			const names = [];
-			for (const btn of buttons) {
+			for (const btn of markDoneButtons) {
 				const name = btn.getAttribute('data-activityname') || btn.textContent.trim();
 				names.push(name);
 			}
+
+			// Submit all and finish button (quiz summary page)
+			const submitAllBtns = document.querySelectorAll('button[type="submit"].btn-primary');
+			for (const btn of submitAllBtns) {
+				const text = btn.textContent.trim().toLowerCase();
+				// Match "Tout envoyer et terminer" or similar submit-all buttons
+				if (text.includes('envoyer') || text.includes('terminer') || text.includes('submit') || text.includes('finish')) {
+					names.push(btn.textContent.trim());
+				}
+			}
+
 			return JSON.stringify(names);
 		})()
 	"#;
@@ -776,18 +788,31 @@ async fn parse_confirmation_prompts(page: &Page) -> Result<Vec<String>> {
 	Ok(names)
 }
 
-/// Click all confirmation buttons (mark as done) on the page
+/// Click all confirmation buttons (mark as done, submit all) on the page
 async fn click_confirmation_buttons(page: &Page) -> Result<()> {
 	let script = r#"
 		(function() {
-			const buttons = document.querySelectorAll(
+			let clicked = 0;
+
+			// Mark as done buttons
+			const markDoneButtons = document.querySelectorAll(
 				'button[data-action="toggle-manual-completion"], button[data-toggletype="manual:mark-done"]'
 			);
-			let clicked = 0;
-			for (const btn of buttons) {
+			for (const btn of markDoneButtons) {
 				btn.click();
 				clicked++;
 			}
+
+			// Submit all and finish button (quiz summary page)
+			const submitAllBtns = document.querySelectorAll('button[type="submit"].btn-primary');
+			for (const btn of submitAllBtns) {
+				const text = btn.textContent.trim().toLowerCase();
+				if (text.includes('envoyer') || text.includes('terminer') || text.includes('submit') || text.includes('finish')) {
+					btn.click();
+					clicked++;
+				}
+			}
+
 			return clicked;
 		})()
 	"#;
@@ -795,6 +820,40 @@ async fn click_confirmation_buttons(page: &Page) -> Result<()> {
 	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click confirmation buttons: {}", e))?;
 	let clicked = result.value().and_then(|v| v.as_i64()).unwrap_or(0);
 	log!("Clicked {} confirmation button(s)", clicked);
+
+	Ok(())
+}
+
+/// Click all confirmation buttons, then wait and handle any modal that appears
+async fn click_all_confirmations(page: &Page) -> Result<()> {
+	click_confirmation_buttons(page).await?;
+	// Wait for potential modal to appear
+	tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+	click_modal_confirmation(page).await?;
+	Ok(())
+}
+
+/// Click confirmation button in modal dialogs (e.g., "Tout envoyer et terminer" popup)
+async fn click_modal_confirmation(page: &Page) -> Result<()> {
+	let script = r#"
+		(function() {
+			// Look for modal confirmation buttons
+			const modalBtns = document.querySelectorAll('.modal button.btn-primary, .modal-dialog button.btn-primary, [role="dialog"] button.btn-primary');
+			for (const btn of modalBtns) {
+				const text = btn.textContent.trim().toLowerCase();
+				if (text.includes('envoyer') || text.includes('terminer') || text.includes('submit') || text.includes('finish') || text.includes('confirm') || text.includes('ok')) {
+					btn.click();
+					return true;
+				}
+			}
+			return false;
+		})()
+	"#;
+
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click modal confirmation: {}", e))?;
+	if result.value().and_then(|v| v.as_bool()) == Some(true) {
+		log!("Clicked modal confirmation button");
+	}
 
 	Ok(())
 }
