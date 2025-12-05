@@ -254,6 +254,11 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 			}
 		}
 
+		// Save page HTML before parsing for debugging
+		if let Err(e) = save_page_html(page, "quiz_page").await {
+			elog!("Failed to save quiz page HTML: {e}");
+		}
+
 		let questions = parse_questions(page).await?;
 
 		if questions.is_empty() {
@@ -992,6 +997,42 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 							});
 							continue;
 						}
+					}
+				}
+
+				// Check for inline dropdown questions (select embedded in question text)
+				const inlineSelects = formulation.querySelectorAll('.subquestion select, .qtext select');
+				if (inlineSelects.length > 0) {
+					const items = [];
+					for (const select of inlineSelects) {
+						// For inline selects, the prompt is the surrounding text
+						// We'll use an empty prompt since the context is in questionText
+						const options = [];
+						for (const opt of select.options) {
+							if (opt.value !== '') {  // Skip empty placeholder option
+								options.push({
+									value: opt.value,
+									text: opt.textContent.trim()
+								});
+							}
+						}
+
+						items.push({
+							prompt: '',  // Context is in the question text
+							select_name: select.name || '',
+							options: options,
+							selected_value: select.value || ''
+						});
+					}
+
+					if (items.length > 0) {
+						questions.push({
+							type: 'Matching',
+							question_text: questionText,
+							items: items,
+							images: questionImages
+						});
+						continue;
 					}
 				}
 
