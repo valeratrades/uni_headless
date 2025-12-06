@@ -69,6 +69,104 @@ pub struct MatchOption {
 	pub text: String,
 }
 
+/// A blank (input field) within a FillInBlanks question
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum Blank {
+	/// A text input field (like ShortAnswer)
+	Text {
+		/// The input element's name attribute
+		input_name: String,
+		/// Current value (if any)
+		current_value: String,
+	},
+	/// A dropdown select (like Match)
+	Select {
+		/// The select element's name attribute
+		select_name: String,
+		/// Available options
+		options: Vec<MatchOption>,
+		/// Currently selected value
+		selected_value: String,
+	},
+}
+
+impl fmt::Display for Blank {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Blank::Text { current_value, .. } =>
+				if current_value.is_empty() {
+					write!(f, "[___]")
+				} else {
+					write!(f, "[{}]", current_value)
+				},
+			Blank::Select { options, .. } => {
+				let available: Vec<&str> = options.iter().filter(|o| !o.value.is_empty() && o.value != "0").map(|o| o.text.as_str()).collect();
+				write!(f, "[select from: {}]", available.join(" | "))
+			}
+		}
+	}
+}
+
+/// A segment of text in a FillInBlanks question
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum FillSegment {
+	/// Plain text
+	Text(String),
+	/// A blank with its index (0-based)
+	Blank(usize),
+}
+
+/// A fill-in-the-blanks question with text and embedded inputs
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct FillInBlanks {
+	/// The question prompt/header text
+	pub question_text: String,
+	/// Segments of text and blanks in order
+	pub segments: Vec<FillSegment>,
+	/// All blanks (referenced by index in segments)
+	pub blanks: Vec<Blank>,
+	/// Images in the question
+	#[serde(default)]
+	pub images: Vec<Image>,
+}
+
+impl fmt::Display for FillInBlanks {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		// First, show the question text if present
+		if !self.question_text.is_empty() {
+			writeln!(f, "{}", self.question_text)?;
+			writeln!(f)?;
+		}
+
+		// Show the fill-in text with numbered blanks
+		write!(f, "Fill in: ")?;
+		for segment in &self.segments {
+			match segment {
+				FillSegment::Text(text) => write!(f, "{}", text)?,
+				FillSegment::Blank(idx) => write!(f, "[{}]", idx + 1)?,
+			}
+		}
+		writeln!(f)?;
+		writeln!(f)?;
+
+		// Show the blanks with their types and options
+		writeln!(f, "Blanks:")?;
+		for (i, blank) in self.blanks.iter().enumerate() {
+			match blank {
+				Blank::Text { .. } => {
+					writeln!(f, "  [{}]: text input", i + 1)?;
+				}
+				Blank::Select { options, .. } => {
+					let available: Vec<&str> = options.iter().filter(|o| !o.value.is_empty() && o.value != "0").map(|o| o.text.as_str()).collect();
+					writeln!(f, "  [{}]: select from: {}", i + 1, available.join(", "))?;
+				}
+			}
+		}
+
+		Ok(())
+	}
+}
+
 impl fmt::Display for MatchItem {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		let available: Vec<&str> = self.options.iter().filter(|o| !o.value.is_empty() && o.value != "0").map(|o| o.text.as_str()).collect();
@@ -137,6 +235,8 @@ pub enum Question {
 		#[serde(default)]
 		images: Vec<Image>,
 	},
+	/// Fill-in-the-blanks question with embedded text inputs and/or dropdowns
+	FillInBlanks(FillInBlanks),
 }
 
 impl Question {
@@ -148,14 +248,15 @@ impl Question {
 			| Question::ShortAnswer { question_text, .. }
 			| Question::Matching { question_text, .. } => question_text,
 			Question::CodeSubmission { description, .. } => description,
+			Question::FillInBlanks(fill) => &fill.question_text,
 		}
 	}
 
-	/// Get choices for this question (empty for CodeSubmission, ShortAnswer, and Matching)
+	/// Get choices for this question (empty for CodeSubmission, ShortAnswer, Matching, and FillInBlanks)
 	pub fn choices(&self) -> &[Choice] {
 		match self {
 			Question::SingleChoice { choices, .. } | Question::MultiChoice { choices, .. } => choices,
-			Question::CodeSubmission { .. } | Question::ShortAnswer { .. } | Question::Matching { .. } => &[],
+			Question::CodeSubmission { .. } | Question::ShortAnswer { .. } | Question::Matching { .. } | Question::FillInBlanks { .. } => &[],
 		}
 	}
 
@@ -167,6 +268,7 @@ impl Question {
 			| Question::ShortAnswer { images, .. }
 			| Question::Matching { images, .. }
 			| Question::CodeSubmission { images, .. } => images,
+			Question::FillInBlanks(fill) => &fill.images,
 		}
 	}
 
@@ -221,6 +323,19 @@ impl Question {
 			_ => None,
 		}
 	}
+
+	/// Returns true if this is a fill-in-the-blanks question
+	pub fn is_fill_in_blanks(&self) -> bool {
+		matches!(self, Question::FillInBlanks { .. })
+	}
+
+	/// Get fill-in-blanks data for FillInBlanks questions
+	pub fn fill_in_blanks(&self) -> Option<&FillInBlanks> {
+		match self {
+			Question::FillInBlanks(fill) => Some(fill),
+			_ => None,
+		}
+	}
 }
 
 impl fmt::Display for Question {
@@ -256,6 +371,9 @@ impl fmt::Display for Question {
 						}
 					}
 				}
+			}
+			Question::FillInBlanks(fill) => {
+				write!(f, "{}", fill)?;
 			}
 		}
 		Ok(())

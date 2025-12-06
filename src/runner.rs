@@ -13,9 +13,9 @@ use v_utils::xdg_state_dir;
 use v_utils::{Percent, elog, io::confirm, log};
 
 use crate::{
-	Choice, Image, MatchItem, MatchOption, Question, RequiredFile,
+	Blank, Choice, FillInBlanks, FillSegment, Image, MatchItem, MatchOption, Question, RequiredFile,
 	config::AppConfig,
-	llm::{LlmAnswerResult, ask_llm_for_answer, ask_llm_for_code, retry_llm_with_test_results},
+	llm::{FillInBlanksAnswerItem, LlmAnswerResult, ask_llm_for_answer, ask_llm_for_code, retry_llm_with_test_results},
 };
 
 /// Handle a VPL (Virtual Programming Lab) code submission page
@@ -278,6 +278,8 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 				"[text]"
 			} else if question.is_matching() {
 				"[match]"
+			} else if question.is_fill_in_blanks() {
+				"[fill]"
 			} else if question.is_multi() {
 				"[multi]"
 			} else {
@@ -333,6 +335,8 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 						"[text]"
 					} else if question.is_matching() {
 						"[match]"
+					} else if question.is_fill_in_blanks() {
+						"[fill]"
 					} else if question.is_multi() {
 						"[multi]"
 					} else {
@@ -363,6 +367,34 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 										answer_logs.push(format!("    {} -> {}", item.prompt, answer_text));
 										break;
 									}
+								}
+							}
+						}
+						LlmAnswerResult::FillInBlanks { answers } => {
+							answer_logs.push("  Blanks:".to_string());
+							if let Some(fill) = question.fill_in_blanks() {
+								for (i, blank) in fill.blanks.iter().enumerate() {
+									// Find the answer for this blank
+									let answer_text = answers
+										.iter()
+										.find(|a| match (a, blank) {
+											(FillInBlanksAnswerItem::Text { input_name, .. }, Blank::Text { input_name: bn, .. }) => input_name == bn,
+											(FillInBlanksAnswerItem::Select { select_name, .. }, Blank::Select { select_name: sn, .. }) => select_name == sn,
+											_ => false,
+										})
+										.map(|a| match a {
+											FillInBlanksAnswerItem::Text { answer, .. } => answer.clone(),
+											FillInBlanksAnswerItem::Select { value, .. } => {
+												// Find the option text for this value
+												if let Blank::Select { options, .. } = blank {
+													options.iter().find(|o| &o.value == value).map(|o| o.text.clone()).unwrap_or_else(|| value.clone())
+												} else {
+													value.clone()
+												}
+											}
+										})
+										.unwrap_or_else(|| "?".to_string());
+									answer_logs.push(format!("    [{}]: {}", i + 1, answer_text));
 								}
 							}
 						}
@@ -461,6 +493,17 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 						LlmAnswerResult::Matching { selections } =>
 							for (select_name, value) in selections {
 								set_select_value(page, select_name, value).await?;
+							},
+						LlmAnswerResult::FillInBlanks { answers } =>
+							for item in answers {
+								match item {
+									FillInBlanksAnswerItem::Text { input_name, answer } => {
+										set_text_answer(page, input_name, answer).await?;
+									}
+									FillInBlanksAnswerItem::Select { select_name, value } => {
+										set_select_value(page, select_name, value).await?;
+									}
+								}
 							},
 					}
 				}
@@ -930,11 +973,88 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 				const questionText = extractTextWithLatex(qtextEl);
 				const questionImages = extractImages(qtextEl);
 
-				// Check for short answer (text input) questions first
-				// These have .ablock with input[type="text"] but no .answer div with radio/checkbox
+				// Check for fill-in-the-blanks (inline inputs/selects mixed with text)
+				// These have inputs or selects directly inside the question content area
 				const ablockDiv = formulation.querySelector('.ablock');
+				const allInlineInputs = formulation.querySelectorAll('.qtext input[type="text"], .ablock input[type="text"], .qtext select, .ablock select');
+				const hasMultipleInlineInputs = allInlineInputs.length > 1;
+				const hasInlineSelect = formulation.querySelector('.qtext select, .ablock select') !== null;
+				const hasInlineTextInput = formulation.querySelector('.qtext input[type="text"], .ablock input[type="text"]') !== null;
+
+				// If we have multiple inline inputs OR a mix of text inputs and selects, it's fill-in-blanks
+				if (hasMultipleInlineInputs || (hasInlineSelect && hasInlineTextInput)) {
+					// Parse segments: walk through the content area and extract text/blanks in order
+					const contentArea = formulation.querySelector('.ablock') || formulation.querySelector('.qtext');
+					const segments = [];
+					const blanks = [];
+					let blankIndex = 0;
+
+					function walkForSegments(node) {
+						if (node.nodeType === Node.TEXT_NODE) {
+							const text = node.textContent;
+							if (text.trim()) {
+								segments.push({ type: 'text', text: text });
+							}
+						} else if (node.nodeType === Node.ELEMENT_NODE) {
+							const tag = node.tagName.toLowerCase();
+
+							if (tag === 'input' && node.type === 'text') {
+								segments.push({ type: 'blank', index: blankIndex });
+								blanks.push({
+									type: 'text',
+									input_name: node.name || '',
+									current_value: node.value || ''
+								});
+								blankIndex++;
+							} else if (tag === 'select') {
+								segments.push({ type: 'blank', index: blankIndex });
+								const options = [];
+								for (const opt of node.options) {
+									if (opt.value !== '') {
+										options.push({
+											value: opt.value,
+											text: opt.textContent.trim()
+										});
+									}
+								}
+								blanks.push({
+									type: 'select',
+									select_name: node.name || '',
+									options: options,
+									selected_value: node.value || ''
+								});
+								blankIndex++;
+							} else if (tag === 'br') {
+								segments.push({ type: 'text', text: '\n' });
+							} else if (!['script', 'style', 'mjx-container'].includes(tag)) {
+								// Recurse into child nodes
+								for (const child of node.childNodes) {
+									walkForSegments(child);
+								}
+							}
+						}
+					}
+
+					if (contentArea) {
+						walkForSegments(contentArea);
+					}
+
+					if (blanks.length > 0) {
+						questions.push({
+							type: 'FillInBlanks',
+							question_text: questionText,
+							segments: segments,
+							blanks: blanks,
+							images: questionImages
+						});
+						continue;
+					}
+				}
+
+				// Check for short answer (text input) questions
+				// These have .ablock with a single input[type="text"] but no .answer div with radio/checkbox
 				const textInput = ablockDiv?.querySelector('input[type="text"]');
-				if (textInput && textInput.name) {
+				if (textInput && textInput.name && !hasMultipleInlineInputs) {
 					questions.push({
 						type: 'ShortAnswer',
 						question_text: questionText,
@@ -1087,6 +1207,63 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 			.unwrap_or_default();
 
 		match question_type {
+			"FillInBlanks" => {
+				let segments_json = item["segments"].as_array();
+				let blanks_json = item["blanks"].as_array();
+
+				if let (Some(segs_arr), Some(blanks_arr)) = (segments_json, blanks_json) {
+					let segments: Vec<FillSegment> = segs_arr
+						.iter()
+						.filter_map(|seg| {
+							let seg_type = seg["type"].as_str()?;
+							match seg_type {
+								"text" => Some(FillSegment::Text(seg["text"].as_str().unwrap_or("").to_string())),
+								"blank" => Some(FillSegment::Blank(seg["index"].as_u64().unwrap_or(0) as usize)),
+								_ => None,
+							}
+						})
+						.collect();
+
+					let blanks: Vec<Blank> = blanks_arr
+						.iter()
+						.filter_map(|b| {
+							let blank_type = b["type"].as_str()?;
+							match blank_type {
+								"text" => Some(Blank::Text {
+									input_name: b["input_name"].as_str().unwrap_or("").to_string(),
+									current_value: b["current_value"].as_str().unwrap_or("").to_string(),
+								}),
+								"select" => {
+									let options: Vec<MatchOption> = b["options"]
+										.as_array()
+										.map(|arr| {
+											arr.iter()
+												.map(|opt| MatchOption {
+													value: opt["value"].as_str().unwrap_or("").to_string(),
+													text: opt["text"].as_str().unwrap_or("").to_string(),
+												})
+												.collect()
+										})
+										.unwrap_or_default();
+									Some(Blank::Select {
+										select_name: b["select_name"].as_str().unwrap_or("").to_string(),
+										options,
+										selected_value: b["selected_value"].as_str().unwrap_or("").to_string(),
+									})
+								}
+								_ => None,
+							}
+						})
+						.collect();
+
+					questions.push(Question::FillInBlanks(FillInBlanks {
+						question_text,
+						segments,
+						blanks,
+						images,
+					}));
+				}
+			}
 			"ShortAnswer" => {
 				let input_name = item["input_name"].as_str().unwrap_or("").to_string();
 				let current_answer = item["current_answer"].as_str().unwrap_or("").to_string();

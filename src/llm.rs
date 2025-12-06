@@ -5,7 +5,7 @@ use color_eyre::{
 	eyre::{bail, eyre},
 };
 
-use crate::Question;
+use crate::{Blank, Question};
 
 /// LLM response for single-choice questions
 #[derive(Debug, serde::Deserialize)]
@@ -39,6 +39,20 @@ struct LlmMatchPair {
 	answer: String,
 }
 
+/// LLM response for fill-in-the-blanks questions
+#[derive(Debug, serde::Deserialize)]
+struct LlmFillInBlanksAnswer {
+	blanks: Vec<LlmBlankAnswer>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LlmBlankAnswer {
+	/// The blank number (1-indexed as shown to the LLM)
+	blank_number: usize,
+	/// The answer (text for text inputs, selected option text for dropdowns)
+	answer: String,
+}
+
 /// Result of LLM answering a question
 pub enum LlmAnswerResult {
 	Single {
@@ -56,6 +70,20 @@ pub enum LlmAnswerResult {
 	Matching {
 		selections: Vec<(String, String)>,
 	},
+	/// FillInBlanks: vector of (blank_index, answer) where answer is either:
+	/// - For text blanks: the text to input
+	/// - For select blanks: (select_name, value_to_select)
+	FillInBlanks {
+		answers: Vec<FillInBlanksAnswerItem>,
+	},
+}
+
+/// An answer for a single blank in a FillInBlanks question
+pub enum FillInBlanksAnswerItem {
+	/// Text input answer
+	Text { input_name: String, answer: String },
+	/// Select/dropdown answer
+	Select { select_name: String, value: String },
 }
 
 /// LLM response for code submission questions
@@ -211,6 +239,78 @@ Respond with JSON only, no markdown, in this exact format:
 		}
 
 		return Ok(LlmAnswerResult::Matching { selections });
+	}
+
+	// Handle fill-in-the-blanks questions
+	if question.is_fill_in_blanks() {
+		let fill = question.fill_in_blanks().unwrap();
+
+		let prompt = format!(
+			r#"You are answering a fill-in-the-blanks question. Fill in each numbered blank with the correct answer.
+
+{question_display}
+Respond with JSON only, no markdown, in this exact format:
+{{"blanks": [{{"blank_number": <number>, "answer": "<the answer for this blank>"}}]}}
+
+For text input blanks, provide the exact text to enter.
+For dropdown blanks, provide the exact text of the option to select (one of the listed choices)."#
+		);
+
+		let mut client = LlmClient::new().model(Model::Medium).max_tokens(1024).force_json();
+
+		// Attach question images
+		for img in question.images() {
+			match fetch_image_as_base64(page, &img.url).await {
+				Ok((base64, media_type)) => {
+					client = client.append_file(base64, media_type);
+				}
+				Err(e) => {
+					tracing::warn!("Failed to fetch image for LLM: {}", e);
+				}
+			}
+		}
+
+		let mut conv = Conversation::new();
+		conv.add(Role::User, prompt);
+
+		let response = client.conversation(&conv).await?;
+		tracing::debug!("LLM raw response: {}", response.text);
+
+		let json_str = response.text.trim();
+		let answer: LlmFillInBlanksAnswer = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, json_str))?;
+
+		// Convert LLM answer to FillInBlanksAnswerItem
+		let mut answers = Vec::new();
+		for blank_answer in answer.blanks {
+			let blank_idx = blank_answer.blank_number.saturating_sub(1); // Convert 1-indexed to 0-indexed
+			if blank_idx >= fill.blanks.len() {
+				tracing::warn!("LLM returned invalid blank number: {} (max: {})", blank_answer.blank_number, fill.blanks.len());
+				continue;
+			}
+
+			let blank = &fill.blanks[blank_idx];
+			match blank {
+				Blank::Text { input_name, .. } => {
+					answers.push(FillInBlanksAnswerItem::Text {
+						input_name: input_name.clone(),
+						answer: blank_answer.answer,
+					});
+				}
+				Blank::Select { select_name, options, .. } => {
+					// Find the option value for the answer text
+					if let Some(opt) = options.iter().find(|o| o.text == blank_answer.answer) {
+						answers.push(FillInBlanksAnswerItem::Select {
+							select_name: select_name.clone(),
+							value: opt.value.clone(),
+						});
+					} else {
+						tracing::warn!("LLM returned unknown option '{}' for blank {}", blank_answer.answer, blank_answer.blank_number);
+					}
+				}
+			}
+		}
+
+		return Ok(LlmAnswerResult::FillInBlanks { answers });
 	}
 
 	// Handle multiple-choice questions
