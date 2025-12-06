@@ -154,35 +154,31 @@ Respond with JSON only, no markdown, in this exact format:
 	if question.is_matching() {
 		let items = question.match_items();
 
-		// Build the prompt with all items and their options
+		// Build the prompt with all items and their per-item options
 		let mut items_text = String::new();
-		let mut all_options: Vec<&str> = Vec::new();
 
 		for (i, item) in items.iter().enumerate() {
-			items_text.push_str(&format!("{}. {}\n", i + 1, item.prompt));
-			// Collect unique options (skip "Choisir…" which has value "0")
-			for opt in &item.options {
-				if opt.value != "0" && !all_options.contains(&opt.text.as_str()) {
-					all_options.push(&opt.text);
-				}
+			// Collect available options for this item (skip empty/placeholder)
+			let available: Vec<&str> = item.options.iter().filter(|o| !o.value.is_empty() && o.value != "0").map(|o| o.text.as_str()).collect();
+
+			if item.prompt.is_empty() {
+				// For inline selects, just show the slot number and options
+				items_text.push_str(&format!("[{}] -> choose from: {}\n", i + 1, available.join(", ")));
+			} else {
+				items_text.push_str(&format!("{}. {} -> choose from: {}\n", i + 1, item.prompt, available.join(", ")));
 			}
 		}
 
-		let options_text = all_options.iter().map(|o| format!("- {}", o)).collect::<Vec<_>>().join("\n");
-
 		let prompt = format!(
-			r#"You are answering a matching question. Match each item to the correct option.
+			r#"You are answering a matching question. For each item, select the correct option from its available choices.
 
 Question:
 {question_text}
 
-Items to match:
+Items to match (each with its available options):
 {items_text}
-Available options:
-{options_text}
-
 Respond with JSON only, no markdown, in this exact format:
-{{"matches": [{{"prompt": "<item prompt text>", "answer": "<matching option text>"}}]}}"#
+{{"matches": [{{"prompt": "<item prompt text or slot number like '[1]'>", "answer": "<chosen option text>"}}]}}"#
 		);
 
 		let mut client = LlmClient::new().model(Model::Medium).max_tokens(512).force_json();
@@ -212,8 +208,17 @@ Respond with JSON only, no markdown, in this exact format:
 		let mut selections = Vec::new();
 		for match_pair in answer.matches {
 			// Find the item that matches this prompt
-			for item in items {
-				if item.prompt.contains(&match_pair.prompt) || match_pair.prompt.contains(&item.prompt) {
+			// For inline selects, the prompt might be a slot number like "[1]"
+			for (i, item) in items.iter().enumerate() {
+				let slot_format = format!("[{}]", i + 1);
+				let matches_prompt = if item.prompt.is_empty() {
+					// For inline selects, check if LLM returned the slot number
+					match_pair.prompt == slot_format || match_pair.prompt == (i + 1).to_string()
+				} else {
+					item.prompt.contains(&match_pair.prompt) || match_pair.prompt.contains(&item.prompt)
+				};
+
+				if matches_prompt {
 					// Find the option value for the answer text
 					for opt in &item.options {
 						if opt.text == match_pair.answer {

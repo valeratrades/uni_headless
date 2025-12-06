@@ -243,7 +243,13 @@ impl fmt::Display for Question {
 				writeln!(f)?;
 				for item in items {
 					let selected = item.options.iter().find(|o| o.value == item.selected_value).map(|o| o.text.as_str()).unwrap_or("___");
-					writeln!(f, "  {} -> [{}]", item.prompt, selected)?;
+					// Show available options for this item (excluding empty placeholder)
+					let available: Vec<&str> = item.options.iter().filter(|o| !o.value.is_empty() && o.value != "0").map(|o| o.text.as_str()).collect();
+					if available.is_empty() {
+						writeln!(f, "  {} -> [{}]", item.prompt, selected)?;
+					} else {
+						writeln!(f, "  {} -> [{}]  (options: {})", item.prompt, selected, available.join(", "))?;
+					}
 				}
 			}
 			Question::CodeSubmission { description, required_files, .. } => {

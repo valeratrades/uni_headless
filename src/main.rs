@@ -66,10 +66,10 @@ async fn main() -> Result<()> {
 	#[cfg(feature = "xdg")]
 	if !args.debug_from_html {
 		let html_dir = xdg_state_dir!("persist_htmls");
-		if html_dir.exists() {
-			if let Err(e) = std::fs::remove_dir_all(&html_dir) {
-				elog!("Failed to clean HTML logs: {}", e);
-			}
+		if html_dir.exists()
+			&& let Err(e) = std::fs::remove_dir_all(&html_dir)
+		{
+			elog!("Failed to clean HTML logs: {}", e);
 		}
 	}
 

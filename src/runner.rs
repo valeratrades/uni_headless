@@ -235,25 +235,6 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 		}
 		first_page = false;
 
-		// Check for confirmation prompts (mark as done buttons) before parsing questions
-		let confirmation_buttons = find_confirmation_buttons(page, false).await?;
-		if !confirmation_buttons.is_empty() {
-			log!("Found {} confirmation prompt(s):", confirmation_buttons.len());
-			for btn in &confirmation_buttons {
-				log!("  - {btn}");
-			}
-
-			if config.auto_submit {
-				log!("Auto-clicking confirmation buttons...");
-				if click_all_confirmations(page).await? {
-					// Modal confirmation clicked = quiz submitted, we're done
-					return Ok(());
-				}
-			} else {
-				log!("(use --auto-submit flag to have these auto-click)");
-			}
-		}
-
 		// Save page HTML before parsing for debugging
 		if let Err(e) = save_page_html(page, "quiz_page").await {
 			elog!("Failed to save quiz page HTML: {e}");
@@ -262,6 +243,25 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 		let questions = parse_questions(page).await?;
 
 		if questions.is_empty() {
+			// Only check for confirmation prompts when there are no questions to answer
+			let confirmation_buttons = find_confirmation_buttons(page, false).await?;
+			if !confirmation_buttons.is_empty() {
+				log!("Found {} confirmation prompt(s):", confirmation_buttons.len());
+				for btn in &confirmation_buttons {
+					log!("  - {btn}");
+				}
+
+				if config.auto_submit {
+					log!("Auto-clicking confirmation buttons...");
+					if click_all_confirmations(page).await? {
+						// Modal confirmation clicked = quiz submitted, we're done
+						return Ok(());
+					}
+				} else {
+					log!("(use --auto-submit flag to have these auto-click)");
+				}
+			}
+
 			log!("No more questions found. Waiting for manual intervention or page change...");
 			// Run stop hook if configured
 			if let Some(ref hook) = config.stop_hook {
@@ -768,8 +768,7 @@ async fn parse_vpl_proposed_grade(page: &Page) -> Result<Option<Percent>> {
 const CONFIRMATION_MATCH_JS: &str = r#"
 	function isConfirmationText(text) {
 		const t = text.toLowerCase();
-		return t.includes('envoyer') || t.includes('terminer') || t.includes('submit') ||
-		       t.includes('finish') || t.includes('finir') || t.includes('confirm') || t.includes('valider');
+		return t.includes('envoyer') || t.includes('terminer') || t.includes('submit') || t.includes('finir') || t.includes('confirm') || t.includes('valider');
 	}
 "#;
 
