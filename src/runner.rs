@@ -251,14 +251,14 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 					log!("  - {btn}");
 				}
 
-				if config.auto_submit {
+				if config.continuation_prompts {
 					log!("Auto-clicking confirmation buttons...");
 					if click_all_confirmations(page).await? {
 						// Modal confirmation clicked = quiz submitted, we're done
 						return Ok(());
 					}
 				} else {
-					log!("(use --auto-submit flag to have these auto-click)");
+					log!("(set continuation_prompts = true in config to auto-click)");
 				}
 			}
 
