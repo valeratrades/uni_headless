@@ -970,21 +970,28 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 
 			for (const formulation of formulations) {
 				const qtextEl = formulation.querySelector('.qtext');
-				const questionText = extractTextWithLatex(qtextEl);
-				const questionImages = extractImages(qtextEl);
+				// For multianswer questions, qtext may not exist - question is directly in formulation
+				const questionText = extractTextWithLatex(qtextEl) || '';
+				const questionImages = extractImages(qtextEl) || extractImages(formulation);
 
-				// Check for fill-in-the-blanks (inline inputs/selects mixed with text)
-				// These have inputs or selects directly inside the question content area
+				// Check for fill-in-the-blanks (multianswer / cloze questions)
+				// These have .subquestion spans with inputs/selects embedded in the content
+				// Also check for inputs directly in .qtext, .ablock, or the formulation itself
 				const ablockDiv = formulation.querySelector('.ablock');
-				const allInlineInputs = formulation.querySelectorAll('.qtext input[type="text"], .ablock input[type="text"], .qtext select, .ablock select');
+				const subquestionInputs = formulation.querySelectorAll('.subquestion input[type="text"], .subquestion select');
+				const allInlineInputs = formulation.querySelectorAll(
+					'.qtext input[type="text"], .ablock input[type="text"], .qtext select, .ablock select, ' +
+					'.subquestion input[type="text"], .subquestion select'
+				);
 				const hasMultipleInlineInputs = allInlineInputs.length > 1;
-				const hasInlineSelect = formulation.querySelector('.qtext select, .ablock select') !== null;
-				const hasInlineTextInput = formulation.querySelector('.qtext input[type="text"], .ablock input[type="text"]') !== null;
+				const hasInlineSelect = formulation.querySelector('.qtext select, .ablock select, .subquestion select') !== null;
+				const hasInlineTextInput = formulation.querySelector('.qtext input[type="text"], .ablock input[type="text"], .subquestion input[type="text"]') !== null;
 
 				// If we have multiple inline inputs OR a mix of text inputs and selects, it's fill-in-blanks
 				if (hasMultipleInlineInputs || (hasInlineSelect && hasInlineTextInput)) {
-					// Parse segments: walk through the content area and extract text/blanks in order
-					const contentArea = formulation.querySelector('.ablock') || formulation.querySelector('.qtext');
+					// Parse segments: walk through the formulation content and extract text/blanks in order
+					// Use formulation itself since content may be directly in it (multianswer questions)
+					const contentArea = formulation;
 					const segments = [];
 					const blanks = [];
 					let blankIndex = 0;
@@ -997,6 +1004,18 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 							}
 						} else if (node.nodeType === Node.ELEMENT_NODE) {
 							const tag = node.tagName.toLowerCase();
+
+							// Skip hidden inputs and accessibility labels
+							if (tag === 'input' && node.type === 'hidden') {
+								return;
+							}
+							if (tag === 'label' && node.classList.contains('accesshide')) {
+								return;
+							}
+							// Skip info/header elements
+							if (tag === 'h4' && node.classList.contains('accesshide')) {
+								return;
+							}
 
 							if (tag === 'input' && node.type === 'text') {
 								segments.push({ type: 'blank', index: blankIndex });
@@ -1026,7 +1045,14 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 								blankIndex++;
 							} else if (tag === 'br') {
 								segments.push({ type: 'text', text: '\n' });
-							} else if (!['script', 'style', 'mjx-container'].includes(tag)) {
+							} else if (tag === 'p') {
+								// Add paragraph break
+								segments.push({ type: 'text', text: '\n' });
+								for (const child of node.childNodes) {
+									walkForSegments(child);
+								}
+								segments.push({ type: 'text', text: '\n' });
+							} else if (!['script', 'style', 'mjx-container', 'img'].includes(tag)) {
 								// Recurse into child nodes
 								for (const child of node.childNodes) {
 									walkForSegments(child);

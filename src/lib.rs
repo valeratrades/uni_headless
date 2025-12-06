@@ -100,7 +100,7 @@ impl fmt::Display for Blank {
 					write!(f, "[{}]", current_value)
 				},
 			Blank::Select { options, .. } => {
-				let available: Vec<&str> = options.iter().filter(|o| !o.value.is_empty() && o.value != "0").map(|o| o.text.as_str()).collect();
+				let available: Vec<&str> = options.iter().filter(|o| !o.value.is_empty()).map(|o| o.text.as_str()).collect();
 				write!(f, "[select from: {}]", available.join(" | "))
 			}
 		}
@@ -157,7 +157,7 @@ impl fmt::Display for FillInBlanks {
 					writeln!(f, "  [{}]: text input", i + 1)?;
 				}
 				Blank::Select { options, .. } => {
-					let available: Vec<&str> = options.iter().filter(|o| !o.value.is_empty() && o.value != "0").map(|o| o.text.as_str()).collect();
+					let available: Vec<&str> = options.iter().filter(|o| !o.value.is_empty()).map(|o| o.text.as_str()).collect();
 					writeln!(f, "  [{}]: select from: {}", i + 1, available.join(", "))?;
 				}
 			}
