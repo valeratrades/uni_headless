@@ -110,16 +110,14 @@ async fn fetch_image_as_base64(page: &Page, url: &str) -> Result<(String, String
 
 /// Ask the LLM to answer a quiz question (multiple-choice or short answer)
 pub async fn ask_llm_for_answer(page: &Page, question: &Question) -> Result<LlmAnswerResult> {
-	let question_text = question.question_text();
+	let question_display = question.to_string();
 
 	// Handle short answer questions
 	if question.is_short_answer() {
 		let prompt = format!(
 			r#"You are answering a short answer question. Provide a concise, direct answer.
 
-Question:
-{question_text}
-
+{question_display}
 Respond with JSON only, no markdown, in this exact format:
 {{"answer": "<your concise answer>"}}"#
 		);
@@ -154,29 +152,10 @@ Respond with JSON only, no markdown, in this exact format:
 	if question.is_matching() {
 		let items = question.match_items();
 
-		// Build the prompt with all items and their per-item options
-		let mut items_text = String::new();
-
-		for (i, item) in items.iter().enumerate() {
-			// Collect available options for this item (skip empty/placeholder)
-			let available: Vec<&str> = item.options.iter().filter(|o| !o.value.is_empty() && o.value != "0").map(|o| o.text.as_str()).collect();
-
-			if item.prompt.is_empty() {
-				// For inline selects, just show the slot number and options
-				items_text.push_str(&format!("[{}] -> choose from: {}\n", i + 1, available.join(", ")));
-			} else {
-				items_text.push_str(&format!("{}. {} -> choose from: {}\n", i + 1, item.prompt, available.join(", ")));
-			}
-		}
-
 		let prompt = format!(
 			r#"You are answering a matching question. For each item, select the correct option from its available choices.
 
-Question:
-{question_text}
-
-Items to match (each with its available options):
-{items_text}
+{question_display}
 Respond with JSON only, no markdown, in this exact format:
 {{"matches": [{{"prompt": "<item prompt text or slot number like '[1]'>", "answer": "<chosen option text>"}}]}}"#
 		);
@@ -236,22 +215,12 @@ Respond with JSON only, no markdown, in this exact format:
 
 	// Handle multiple-choice questions
 	let choices = question.choices();
-
-	let mut options_text = String::new();
-	for (i, choice) in choices.iter().enumerate() {
-		options_text.push_str(&format!("{}. {}\n", i + 1, choice.text));
-	}
-
 	let (prompt, max_tokens) = if question.is_multi() {
 		(
 			format!(
 				r#"You are answering a multiple-choice question where MULTIPLE answers may be correct. Select ALL correct answers.
 
-Question:
-{question_text}
-
-Options:
-{options_text}
+{question_display}
 Respond with JSON only, no markdown, in this exact format:
 {{"responses": ["<text of first correct answer>", "<text of second correct answer>", ...], "response_numbers": [<number of first correct answer>, <number of second correct answer>, ...]}}"#
 			),
@@ -262,11 +231,7 @@ Respond with JSON only, no markdown, in this exact format:
 			format!(
 				r#"You are answering a single-choice question. Pick the ONE correct answer.
 
-Question:
-{question_text}
-
-Options:
-{options_text}
+{question_display}
 Respond with JSON only, no markdown, in this exact format:
 {{"response": "<the text of the correct answer>", "response_number": <the number of the correct answer>}}"#
 			),

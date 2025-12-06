@@ -69,6 +69,17 @@ pub struct MatchOption {
 	pub text: String,
 }
 
+impl fmt::Display for MatchItem {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		let available: Vec<&str> = self.options.iter().filter(|o| !o.value.is_empty() && o.value != "0").map(|o| o.text.as_str()).collect();
+		if self.prompt.is_empty() {
+			write!(f, "[___] -> choose from: {}", available.join(", "))
+		} else {
+			write!(f, "{} -> choose from: {}", self.prompt, available.join(", "))
+		}
+	}
+}
+
 /// Represents different types of quiz questions
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Question {
@@ -215,41 +226,21 @@ impl Question {
 impl fmt::Display for Question {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
-			Question::SingleChoice { question_text, choices, .. } => {
+			Question::SingleChoice { question_text, choices, .. } | Question::MultiChoice { question_text, choices, .. } => {
 				writeln!(f, "{}", question_text)?;
 				writeln!(f)?;
 				for (i, choice) in choices.iter().enumerate() {
-					writeln!(f, "( ) {}. {}", i + 1, choice.text)?;
+					writeln!(f, "{}. {}", i + 1, choice.text)?;
 				}
 			}
-			Question::MultiChoice { question_text, choices, .. } => {
+			Question::ShortAnswer { question_text, .. } => {
 				writeln!(f, "{}", question_text)?;
-				writeln!(f)?;
-				for (i, choice) in choices.iter().enumerate() {
-					writeln!(f, "[ ] {}. {}", i + 1, choice.text)?;
-				}
-			}
-			Question::ShortAnswer { question_text, current_answer, .. } => {
-				writeln!(f, "{}", question_text)?;
-				writeln!(f)?;
-				if current_answer.is_empty() {
-					writeln!(f, "[____________________]")?;
-				} else {
-					writeln!(f, "[{}]", current_answer)?;
-				}
 			}
 			Question::Matching { question_text, items, .. } => {
 				writeln!(f, "{}", question_text)?;
 				writeln!(f)?;
-				for item in items {
-					let selected = item.options.iter().find(|o| o.value == item.selected_value).map(|o| o.text.as_str()).unwrap_or("___");
-					// Show available options for this item (excluding empty placeholder)
-					let available: Vec<&str> = item.options.iter().filter(|o| !o.value.is_empty() && o.value != "0").map(|o| o.text.as_str()).collect();
-					if available.is_empty() {
-						writeln!(f, "  {} -> [{}]", item.prompt, selected)?;
-					} else {
-						writeln!(f, "  {} -> [{}]  (options: {})", item.prompt, selected, available.join(", "))?;
-					}
+				for (i, item) in items.iter().enumerate() {
+					writeln!(f, "{}. {}", i + 1, item)?;
 				}
 			}
 			Question::CodeSubmission { description, required_files, .. } => {

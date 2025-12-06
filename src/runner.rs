@@ -287,9 +287,9 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 			tracing::info!("{}", header);
 			eprintln!("{}", header);
 
-			let text = question.question_text();
-			tracing::info!("{}", text);
-			eprintln!("{}", text);
+			let question_str = question.to_string();
+			tracing::info!("{}", question_str);
+			eprint!("{}", question_str);
 
 			// Display question images
 			for img in question.images() {
@@ -299,33 +299,13 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 				}
 			}
 
-			// Display choices for choice-based questions
-			let choices = question.choices();
-			for (j, choice) in choices.iter().enumerate() {
-				let selected_marker = if choice.selected { " [SELECTED]" } else { "" };
-				let line = format!("  {}. {}{}", j + 1, choice.text, selected_marker);
-				tracing::info!("{}", line);
-				eprintln!("{}", line);
-
-				// Display choice images (smaller)
+			// Display choice images
+			for choice in question.choices() {
 				for img in &choice.images {
 					if let Err(e) = display_image_chafa(page, &img.url, 40).await {
 						elog!("Failed to display choice image: {}", e);
 						eprintln!("    [Image: {}]", img.alt.as_deref().unwrap_or(&img.url));
 					}
-				}
-			}
-
-			// For short answer, show the input field indicator
-			if question.is_short_answer() {
-				eprintln!("  Answer: [____________________]");
-			}
-
-			// For matching, show the items with dropdowns
-			if question.is_matching() {
-				for item in question.match_items() {
-					let selected = item.options.iter().find(|o| o.value == item.selected_value).map(|o| o.text.as_str()).unwrap_or("___");
-					eprintln!("  {} -> [{}]", item.prompt, selected);
 				}
 			}
 
