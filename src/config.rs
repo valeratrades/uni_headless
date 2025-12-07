@@ -10,9 +10,16 @@ pub struct AppConfig {
 	/// Auto-click continuation prompts when found (default: false)
 	#[serde(default)]
 	pub continuation_prompts: bool,
-	/// Command to run when no questions are found (e.g., to notify user)
+	/// Command to run on completion/error (receives message as argument)
 	#[serde(default)]
 	pub stop_hook: Option<String>,
+	/// Number of retries for LLM code generation when tests fail (default: 5)
+	#[serde(default = "default_llm_retries")]
+	pub llm_retries: u32,
+}
+
+fn default_llm_retries() -> u32 {
+	5
 }
 
 impl AppConfig {

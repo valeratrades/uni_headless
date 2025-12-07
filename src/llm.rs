@@ -435,6 +435,7 @@ pub async fn ask_llm_for_code(question: &Question) -> Result<LlmCodeResult> {
 
 	let prompt = format!(
 		r#"You are solving a programming assignment. Write the complete solution code.
+Think in English.
 
 Problem Description:
 {description}

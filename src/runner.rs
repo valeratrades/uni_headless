@@ -18,6 +18,16 @@ use crate::{
 	llm::{FillInBlanksAnswerItem, LlmAnswerResult, ask_llm_for_answer, ask_llm_for_code, retry_llm_with_test_results},
 };
 
+/// Run the stop hook with a message if configured
+fn run_stop_hook(config: &AppConfig, message: &str) {
+	if let Some(ref hook) = config.stop_hook {
+		log!("Running stop hook: {} {:?}", hook, message);
+		// Escape single quotes for shell: replace ' with '\''
+		let escaped = message.replace('\'', "'\\''");
+		let _ = tokio::process::Command::new("sh").arg("-c").arg(format!("{} '{}'", hook, escaped)).spawn();
+	}
+}
+
 /// Handle a VPL (Virtual Programming Lab) code submission page
 /// Returns true if got perfect grade (100%)
 pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig) -> Result<bool> {
@@ -109,10 +119,10 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig)
 	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
 	// Retry loop for test failures
-	const MAX_RETRIES: u32 = 3;
-	for attempt in 0..=MAX_RETRIES {
+	let max_retries = config.llm_retries;
+	for attempt in 0..=max_retries {
 		if attempt > 0 {
-			log!("Retry attempt {}/{}", attempt, MAX_RETRIES);
+			log!("Retry attempt {}/{}", attempt, max_retries);
 		}
 
 		// Save the editor page HTML
@@ -132,15 +142,20 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig)
 		}
 		tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
+		// Try to save and evaluate with retries
+		const BUTTON_CLICK_RETRIES: u32 = 5;
+
 		log!("Saving code...");
 		tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-		if !click_vpl_button(page, "save").await? {
+		if !click_vpl_button_with_retry(page, "save", BUTTON_CLICK_RETRIES).await? {
+			run_stop_hook(config, "Could not find Save button");
 			bail!("Could not find Save button - aborting");
 		}
 
 		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 		log!("Running evaluation...");
-		if !click_vpl_button(page, "evaluate").await? {
+		if !click_vpl_button_with_retry(page, "evaluate", BUTTON_CLICK_RETRIES).await? {
+			run_stop_hook(config, "Could not find Evaluate button");
 			bail!("Could not find Evaluate button - aborting");
 		}
 		log!("Waiting for evaluation results...");
@@ -160,11 +175,12 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig)
 			eprintln!("Proposed grade: {grade}");
 			if grade >= 1.0 {
 				log!("Full marks! Evaluation successful.");
+				run_stop_hook(config, "VPL: Full marks!");
 				return Ok(true);
 			}
 
 			// Not perfect - try to get test results and retry
-			if attempt < MAX_RETRIES {
+			if attempt < max_retries {
 				let test_results = parse_vpl_test_results(page).await?;
 				if let Some(test_results) = test_results {
 					eprintln!("\n=== Test Failure Details ===");
@@ -184,6 +200,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig)
 							// Ask for confirmation before pasting regenerated code
 							if !config.auto_submit && !confirm("Paste regenerated code into editor?").await {
 								log!("Cancelled by user");
+								run_stop_hook(config, "VPL: Cancelled by user");
 								bail!("Evaluation failed: got {} (expected 100%)", grade * Percent(1.0));
 							}
 
@@ -194,21 +211,27 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig)
 						}
 						Err(e) => {
 							elog!("Failed to regenerate code: {}", e);
+							run_stop_hook(config, &format!("VPL: Failed to regenerate code: {}", e));
 							bail!("Evaluation failed: got {} (expected 100%)", grade * Percent(1.0));
 						}
 					}
 				} else {
 					elog!("Could not parse test results for retry");
+					run_stop_hook(config, "VPL: Could not parse test results");
 					bail!("Evaluation failed: got {} (expected 100%)", grade * Percent(1.0));
 				}
 			} else {
-				bail!("Evaluation failed after {} retries: got {} (expected 100%)", MAX_RETRIES, grade * Percent(1.0));
+				let msg = format!("VPL: Failed after {} retries ({}%)", max_retries, grade * Percent(1.0));
+				run_stop_hook(config, &msg);
+				bail!("Evaluation failed after {} retries: got {} (expected 100%)", max_retries, grade * Percent(1.0));
 			}
 		} else {
+			run_stop_hook(config, "VPL: Could not find proposed grade");
 			bail!("Could not find proposed grade in evaluation results");
 		}
 	}
 
+	run_stop_hook(config, "VPL: Exhausted all retry attempts");
 	bail!("Exhausted all retry attempts");
 }
 
@@ -255,6 +278,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 					log!("Auto-clicking confirmation buttons...");
 					if click_all_confirmations(page).await? {
 						// Modal confirmation clicked = quiz submitted, we're done
+						run_stop_hook(config, "Quiz submitted successfully");
 						return Ok(());
 					}
 				} else {
@@ -263,11 +287,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 			}
 
 			log!("No more questions found. Waiting for manual intervention or page change...");
-			// Run stop hook if configured
-			if let Some(ref hook) = config.stop_hook {
-				log!("Running stop hook: {}", hook);
-				let _ = tokio::process::Command::new("sh").arg("-c").arg(hook).spawn();
-			}
+			run_stop_hook(config, "No more questions found");
 			wait_for_page_change(page).await?;
 			continue;
 		}
@@ -412,6 +432,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 						MAX_CONSECUTIVE_FAILURES
 					);
 					if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+						run_stop_hook(config, &format!("Quiz: Exceeded {} consecutive LLM failures", MAX_CONSECUTIVE_FAILURES));
 						bail!("Exceeded {} consecutive LLM failures", MAX_CONSECUTIVE_FAILURES);
 					}
 					// Skip this question but continue with others
@@ -554,6 +575,7 @@ async fn click_vpl_edit_button(page: &Page) -> Result<bool> {
 
 /// Click a VPL button by action name (save, evaluate, run, debug)
 /// Uses chromiumoxide's native click to emulate a real mouse click
+/// Returns Ok(true) if clicked, Ok(false) if button not found, Err if click failed
 async fn click_vpl_button(page: &Page, action: &str) -> Result<bool> {
 	// First, try to find by exact ID
 	let button_id = format!("vpl_ide_{}", action);
@@ -574,6 +596,25 @@ async fn click_vpl_button(page: &Page, action: &str) -> Result<bool> {
 		return Ok(true);
 	}
 
+	Ok(false)
+}
+
+/// Click a VPL button with retry logic
+/// Retries up to max_retries times if the click fails (timeout, etc.)
+async fn click_vpl_button_with_retry(page: &Page, action: &str, max_retries: u32) -> Result<bool> {
+	for attempt in 1..=max_retries {
+		match click_vpl_button(page, action).await {
+			Ok(true) => return Ok(true),
+			Ok(false) => return Ok(false), // Button not found, no point retrying
+			Err(e) =>
+				if attempt < max_retries {
+					elog!("Click on '{action}' failed (attempt {attempt}/{max_retries}): {e}");
+					tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+				} else {
+					return Err(e);
+				},
+		}
+	}
 	Ok(false)
 }
 
