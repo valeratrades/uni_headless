@@ -237,6 +237,20 @@ pub enum Question {
 	},
 	/// Fill-in-the-blanks question with embedded text inputs and/or dropdowns
 	FillInBlanks(FillInBlanks),
+	/// Code block question (inline code editor in quiz, not full VPL page)
+	CodeBlock {
+		/// The question text/prompt
+		question_text: String,
+		/// The textarea's name attribute (for form submission)
+		input_name: String,
+		/// Programming language (e.g., "python", "c", "java")
+		language: String,
+		/// Current code content (if any template provided)
+		current_code: String,
+		/// Images in the question
+		#[serde(default)]
+		images: Vec<Image>,
+	},
 }
 
 impl Question {
@@ -246,17 +260,18 @@ impl Question {
 			Question::SingleChoice { question_text, .. }
 			| Question::MultiChoice { question_text, .. }
 			| Question::ShortAnswer { question_text, .. }
-			| Question::Matching { question_text, .. } => question_text,
+			| Question::Matching { question_text, .. }
+			| Question::CodeBlock { question_text, .. } => question_text,
 			Question::CodeSubmission { description, .. } => description,
 			Question::FillInBlanks(fill) => &fill.question_text,
 		}
 	}
 
-	/// Get choices for this question (empty for CodeSubmission, ShortAnswer, Matching, and FillInBlanks)
+	/// Get choices for this question (empty for CodeSubmission, ShortAnswer, Matching, FillInBlanks, and CodeBlock)
 	pub fn choices(&self) -> &[Choice] {
 		match self {
 			Question::SingleChoice { choices, .. } | Question::MultiChoice { choices, .. } => choices,
-			Question::CodeSubmission { .. } | Question::ShortAnswer { .. } | Question::Matching { .. } | Question::FillInBlanks { .. } => &[],
+			Question::CodeSubmission { .. } | Question::ShortAnswer { .. } | Question::Matching { .. } | Question::FillInBlanks { .. } | Question::CodeBlock { .. } => &[],
 		}
 	}
 
@@ -267,7 +282,8 @@ impl Question {
 			| Question::MultiChoice { images, .. }
 			| Question::ShortAnswer { images, .. }
 			| Question::Matching { images, .. }
-			| Question::CodeSubmission { images, .. } => images,
+			| Question::CodeSubmission { images, .. }
+			| Question::CodeBlock { images, .. } => images,
 			Question::FillInBlanks(fill) => &fill.images,
 		}
 	}
@@ -336,6 +352,27 @@ impl Question {
 			_ => None,
 		}
 	}
+
+	/// Returns true if this is a code block (inline code editor) question
+	pub fn is_code_block(&self) -> bool {
+		matches!(self, Question::CodeBlock { .. })
+	}
+
+	/// Get the input name for code block questions
+	pub fn code_block_input_name(&self) -> Option<&str> {
+		match self {
+			Question::CodeBlock { input_name, .. } => Some(input_name),
+			_ => None,
+		}
+	}
+
+	/// Get the language for code block questions
+	pub fn code_block_language(&self) -> Option<&str> {
+		match self {
+			Question::CodeBlock { language, .. } => Some(language),
+			_ => None,
+		}
+	}
 }
 
 impl fmt::Display for Question {
@@ -374,6 +411,19 @@ impl fmt::Display for Question {
 			}
 			Question::FillInBlanks(fill) => {
 				write!(f, "{}", fill)?;
+			}
+			Question::CodeBlock {
+				question_text,
+				language,
+				current_code,
+				..
+			} => {
+				writeln!(f, "{}", question_text)?;
+				writeln!(f)?;
+				writeln!(f, "Language: {}", language)?;
+				if !current_code.is_empty() {
+					writeln!(f, "Template code provided")?;
+				}
 			}
 		}
 		Ok(())

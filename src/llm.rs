@@ -45,6 +45,12 @@ struct LlmFillInBlanksAnswer {
 	blanks: Vec<LlmBlankAnswer>,
 }
 
+/// LLM response for code block questions
+#[derive(Debug, serde::Deserialize)]
+struct LlmCodeBlockAnswer {
+	code: String,
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct LlmBlankAnswer {
 	/// The blank number (1-indexed as shown to the LLM)
@@ -75,6 +81,10 @@ pub enum LlmAnswerResult {
 	/// - For select blanks: (select_name, value_to_select)
 	FillInBlanks {
 		answers: Vec<FillInBlanksAnswerItem>,
+	},
+	/// CodeBlock: the generated code to paste into the code editor
+	CodeBlock {
+		code: String,
 	},
 }
 
@@ -311,6 +321,50 @@ For dropdown blanks, provide the exact text of the option to select (one of the 
 		}
 
 		return Ok(LlmAnswerResult::FillInBlanks { answers });
+	}
+
+	// Handle code block questions
+	if question.is_code_block() {
+		let language = question.code_block_language().unwrap_or("text");
+
+		let prompt = format!(
+			r#"You are solving a programming problem. Write the complete solution code.
+Think in English.
+
+{question_display}
+
+The programming language is: {language}
+
+IMPORTANT: Respond with JSON only, no markdown, in this exact format:
+{{"code": "<your complete solution code>"}}
+
+Write correct, working code. Do not include docstrings or comments."#
+		);
+
+		let mut client = LlmClient::new().model(Model::Medium).max_tokens(2048).force_json();
+
+		// Attach question images
+		for img in question.images() {
+			match fetch_image_as_base64(page, &img.url).await {
+				Ok((base64, media_type)) => {
+					client = client.append_file(base64, media_type);
+				}
+				Err(e) => {
+					tracing::warn!("Failed to fetch image for LLM: {}", e);
+				}
+			}
+		}
+
+		let mut conv = Conversation::new();
+		conv.add(Role::User, prompt);
+
+		let response = client.conversation(&conv).await?;
+		tracing::debug!("LLM raw response: {}", response.text);
+
+		let json_str = response.text.trim();
+		let answer: LlmCodeBlockAnswer = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, json_str))?;
+
+		return Ok(LlmAnswerResult::CodeBlock { code: answer.code });
 	}
 
 	// Handle multiple-choice questions

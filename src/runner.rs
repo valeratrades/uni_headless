@@ -300,6 +300,8 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 				"[match]"
 			} else if question.is_fill_in_blanks() {
 				"[fill]"
+			} else if question.is_code_block() {
+				"[code]"
 			} else if question.is_multi() {
 				"[multi]"
 			} else {
@@ -357,6 +359,8 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 						"[match]"
 					} else if question.is_fill_in_blanks() {
 						"[fill]"
+					} else if question.is_code_block() {
+						"[code]"
 					} else if question.is_multi() {
 						"[multi]"
 					} else {
@@ -416,6 +420,17 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 										.unwrap_or_else(|| "?".to_string());
 									answer_logs.push(format!("    [{}]: {}", i + 1, answer_text));
 								}
+							}
+						}
+						LlmAnswerResult::CodeBlock { code } => {
+							// Show first few lines of code
+							let lines: Vec<&str> = code.lines().take(5).collect();
+							answer_logs.push("  Code:".to_string());
+							for line in lines {
+								answer_logs.push(format!("    {}", line));
+							}
+							if code.lines().count() > 5 {
+								answer_logs.push(format!("    ... ({} more lines)", code.lines().count() - 5));
 							}
 						}
 					}
@@ -525,6 +540,10 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 										set_select_value(page, select_name, value).await?;
 									}
 								}
+							},
+						LlmAnswerResult::CodeBlock { code } =>
+							if let Some(input_name) = question.code_block_input_name() {
+								set_code_editor_content(page, input_name, code).await?;
 							},
 					}
 				}
@@ -1015,6 +1034,31 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 				const questionText = extractTextWithLatex(qtextEl) || '';
 				const questionImages = extractImages(qtextEl) || extractImages(formulation);
 
+				// Check for code block questions (vplquestion with code-editor textarea)
+				const questionWrapper = formulation.closest('.que');
+				if (questionWrapper && questionWrapper.classList.contains('vplquestion')) {
+					const codeTextarea = formulation.querySelector('textarea[data-role="code-editor"]');
+					if (codeTextarea) {
+						const language = codeTextarea.dataset.templatelang || 'text';
+						// For vplquestion, question text is in .clearfix div, not .qtext
+						let codeQuestionText = questionText;
+						if (!codeQuestionText) {
+							const clearfixDiv = formulation.querySelector('.clearfix');
+							codeQuestionText = extractTextWithLatex(clearfixDiv) || '';
+						}
+						const codeQuestionImages = questionImages.length > 0 ? questionImages : extractImages(formulation.querySelector('.clearfix'));
+						questions.push({
+							type: 'CodeBlock',
+							question_text: codeQuestionText,
+							input_name: codeTextarea.name || '',
+							language: language,
+							current_code: codeTextarea.value || '',
+							images: codeQuestionImages
+						});
+						continue;
+					}
+				}
+
 				// Check for fill-in-the-blanks (multianswer / cloze questions)
 				// These have .subquestion spans with inputs/selects embedded in the content
 				// Also check for inputs directly in .qtext, .ablock, or the formulation itself
@@ -1371,6 +1415,18 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 					questions.push(Question::Matching { question_text, items, images });
 				}
 			}
+			"CodeBlock" => {
+				let input_name = item["input_name"].as_str().unwrap_or("").to_string();
+				let language = item["language"].as_str().unwrap_or("text").to_string();
+				let current_code = item["current_code"].as_str().unwrap_or("").to_string();
+				questions.push(Question::CodeBlock {
+					question_text,
+					input_name,
+					language,
+					current_code,
+					images,
+				});
+			}
 			_ => {
 				let choices_json = item["choices"].as_array();
 				if let Some(choices_arr) = choices_json {
@@ -1485,6 +1541,67 @@ async fn set_select_value(page: &Page, select_name: &str, value: &str) -> Result
 
 	if result.value().and_then(|v| v.as_bool()) != Some(true) {
 		return Err(eyre!("Failed to find select element: {}", select_name));
+	}
+
+	Ok(())
+}
+
+/// Set code in a code editor (ACE editor or textarea with code-editor role)
+async fn set_code_editor_content(page: &Page, input_name: &str, code: &str) -> Result<()> {
+	// Escape special characters for JavaScript string
+	let escaped_code = code
+		.replace('\\', "\\\\")
+		.replace('`', "\\`")
+		.replace('$', "\\$")
+		.replace('\n', "\\n")
+		.replace('\r', "\\r")
+		.replace('\t', "\\t");
+
+	let script = format!(
+		r#"
+		(function() {{
+			const inputName = "{}";
+			const code = `{}`;
+
+			// Find the textarea with this name
+			const textarea = document.querySelector('textarea[name="' + inputName + '"]');
+			if (!textarea) return false;
+
+			// Try ACE editor first - look for editor instance
+			if (typeof ace !== 'undefined') {{
+				// Find the ACE editor container (usually a sibling or parent)
+				const container = textarea.closest('.qvpl-editor-menu')?.parentElement ||
+				                  textarea.closest('.formulation');
+				if (container) {{
+					const aceEditors = container.querySelectorAll('.ace_editor');
+					for (const editorEl of aceEditors) {{
+						const editor = ace.edit(editorEl);
+						if (editor) {{
+							editor.setValue(code, -1);
+							// Also update the hidden textarea for form submission
+							textarea.value = code;
+							textarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
+							textarea.dispatchEvent(new Event('change', {{ bubbles: true }}));
+							return true;
+						}}
+					}}
+				}}
+			}}
+
+			// Fallback: set textarea value directly
+			textarea.value = code;
+			textarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
+			textarea.dispatchEvent(new Event('change', {{ bubbles: true }}));
+			return true;
+		}})()
+		"#,
+		input_name, escaped_code
+	);
+
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set code editor content: {}", e))?;
+
+	if result.value().and_then(|v| v.as_bool()) != Some(true) {
+		return Err(eyre!("Failed to find code editor element"));
 	}
 
 	Ok(())
