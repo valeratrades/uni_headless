@@ -16,10 +16,17 @@ pub struct AppConfig {
 	/// Number of retries for LLM code generation when tests fail (default: 5)
 	#[serde(default = "default_llm_retries")]
 	pub llm_retries: u32,
+	/// Max age in minutes for HTML session directories before cleanup (default: 120 = 2h)
+	#[serde(default = "default_session_max_age_mins")]
+	pub session_max_age_mins: u64,
 }
 
 fn default_llm_retries() -> u32 {
 	5
+}
+
+fn default_session_max_age_mins() -> u64 {
+	120
 }
 
 impl AppConfig {

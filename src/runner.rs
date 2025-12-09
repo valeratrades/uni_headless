@@ -30,7 +30,7 @@ fn run_stop_hook(config: &AppConfig, message: &str) {
 
 /// Handle a VPL (Virtual Programming Lab) code submission page
 /// Returns true if got perfect grade (100%)
-pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig) -> Result<bool> {
+pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig, session_id: &str) -> Result<bool> {
 	let question = parse_vpl_page(page).await?;
 
 	let Some(question) = question else {
@@ -127,7 +127,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig)
 
 		// Save the editor page HTML
 		#[cfg(feature = "xdg")]
-		if let Err(e) = save_page_html(page, "vpl_editor").await {
+		if let Err(e) = save_page_html(page, "vpl_editor", session_id).await {
 			elog!("Failed to save editor page HTML: {e}");
 		}
 
@@ -236,7 +236,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig)
 }
 
 /// Handle a quiz (multi-choice) page
-pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig) -> Result<()> {
+pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig, session_id: &str) -> Result<()> {
 	use v_utils::io::{ConfirmAllResult, confirm_all};
 
 	let mut question_num = 0;
@@ -259,7 +259,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 		first_page = false;
 
 		// Save page HTML before parsing for debugging
-		if let Err(e) = save_page_html(page, "quiz_page").await {
+		if let Err(e) = save_page_html(page, "quiz_page", session_id).await {
 			elog!("Failed to save quiz page HTML: {e}");
 		}
 
@@ -1888,8 +1888,8 @@ pub async fn parse_vpl_page(page: &Page) -> Result<Option<Question>> {
 
 /// Save the current page's HTML to disk for debugging
 #[cfg(feature = "xdg")]
-pub async fn save_page_html(page: &Page, label: &str) -> Result<PathBuf> {
-	let html_dir = xdg_state_dir!("persist_htmls");
+pub async fn save_page_html(page: &Page, label: &str, session_id: &str) -> Result<PathBuf> {
+	let html_dir = xdg_state_dir!("persist_htmls").join(session_id);
 	std::fs::create_dir_all(&html_dir).map_err(|e| eyre!("Failed to create HTML dir: {}", e))?;
 
 	let html = page.evaluate("document.documentElement.outerHTML").await.map_err(|e| eyre!("Failed to get page HTML: {}", e))?;

@@ -2536,6 +2536,7 @@ dependencies = [
  "derive-new",
  "futures",
  "libc",
+ "rand",
  "regex",
  "serde",
  "serde_json",

@@ -4,6 +4,7 @@ use chromiumoxide::browser::{Browser, BrowserConfig};
 use clap::Parser;
 use color_eyre::{Result, eyre::eyre};
 use futures::StreamExt;
+use rand::Rng;
 #[cfg(feature = "xdg")]
 use uni_headless::runner::save_page_html;
 use uni_headless::{
@@ -59,18 +60,35 @@ async fn main() -> Result<()> {
 
 	let mut config = AppConfig::try_build(args.settings)?;
 
-	log!("Starting Moodle login automation...");
+	// Generate random 4-hex-digit session ID
+	let session_id: String = format!("{:04x}", rand::rng().random_range(0..0x10000u32));
+
+	log!("Starting Moodle login automation... [session: {}]", session_id);
 	log!("Visible mode: {}", args.visible);
 
-	// Clean up old HTML logs on startup (unless in debug mode)
+	// Create session-specific HTML directory and cleanup old sessions
 	#[cfg(feature = "xdg")]
 	if !args.debug_from_html {
-		let html_dir = xdg_state_dir!("persist_htmls");
-		if html_dir.exists()
-			&& let Err(e) = std::fs::remove_dir_all(&html_dir)
-		{
-			elog!("Failed to clean HTML logs: {}", e);
+		let html_base = xdg_state_dir!("persist_htmls");
+		let session_dir = html_base.join(&session_id);
+		if let Err(e) = std::fs::create_dir_all(&session_dir) {
+			elog!("Failed to create session HTML dir: {}", e);
 		}
+
+		// Write meta.json with creation timestamp
+		let meta = serde_json::json!({
+			"created_at": std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap_or_default()
+				.as_secs()
+		});
+		let meta_path = session_dir.join("meta.json");
+		if let Err(e) = std::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap_or_default()) {
+			elog!("Failed to write meta.json: {}", e);
+		}
+
+		// Cleanup old sessions
+		cleanup_old_sessions(&html_base, config.session_max_age_mins);
 	}
 
 	// Configure browser based on visibility flag
@@ -102,7 +120,7 @@ async fn main() -> Result<()> {
 			log!("\n========== Processing next URL ({}/{}) ==========", idx + 1, urls.len());
 		}
 
-		match process_url(&mut browser, target_url, &mut config, args.ask_llm, args.debug_from_html, args.manual_login).await {
+		match process_url(&mut browser, target_url, &mut config, args.ask_llm, args.debug_from_html, args.manual_login, &session_id).await {
 			Ok((success, _page)) => {
 				// For VPL pages, only continue to next URL if we got 100%
 				if is_vpl_url(target_url) && !success {
@@ -185,7 +203,15 @@ async fn main() -> Result<()> {
 }
 
 /// Process a single URL - returns (success, page) where success indicates if VPL got 100%
-async fn process_url(browser: &mut Browser, target_url: &str, config: &mut AppConfig, ask_llm: bool, debug_from_html: bool, manual_login: bool) -> Result<(bool, chromiumoxide::Page)> {
+async fn process_url(
+	browser: &mut Browser,
+	target_url: &str,
+	config: &mut AppConfig,
+	ask_llm: bool,
+	debug_from_html: bool,
+	manual_login: bool,
+	session_id: &str,
+) -> Result<(bool, chromiumoxide::Page)> {
 	// Create/navigate to page
 	let page = if debug_from_html {
 		let file_url = format!("file://{}", target_url);
@@ -230,7 +256,7 @@ async fn process_url(browser: &mut Browser, target_url: &str, config: &mut AppCo
 	#[cfg(feature = "xdg")]
 	{
 		let url_label = final_url.as_deref().unwrap_or("unknown").replace("https://", "").replace("http://", "");
-		if let Err(e) = save_page_html(&page, &url_label).await {
+		if let Err(e) = save_page_html(&page, &url_label, session_id).await {
 			elog!("Failed to save page HTML: {}", e);
 		}
 	}
@@ -244,9 +270,9 @@ async fn process_url(browser: &mut Browser, target_url: &str, config: &mut AppCo
 
 	let result = if is_vpl {
 		log!("Detected VPL (Virtual Programming Lab) page");
-		handle_vpl_page(&page, ask_llm, config).await
+		handle_vpl_page(&page, ask_llm, config, session_id).await
 	} else {
-		handle_quiz_page(&page, ask_llm, config).await.map(|_| true) // Quiz pages don't have a "success" metric
+		handle_quiz_page(&page, ask_llm, config, session_id).await.map(|_| true) // Quiz pages don't have a "success" metric
 	};
 
 	match result {
@@ -254,10 +280,55 @@ async fn process_url(browser: &mut Browser, target_url: &str, config: &mut AppCo
 		Err(e) => {
 			// Save error page HTML before returning error
 			#[cfg(feature = "xdg")]
-			if let Err(save_err) = save_page_html(&page, "errored_on").await {
+			if let Err(save_err) = save_page_html(&page, "errored_on", session_id).await {
 				elog!("Failed to save error page HTML: {}", save_err);
 			}
 			Err(e)
+		}
+	}
+}
+
+/// Cleanup session directories older than max_age_mins
+#[cfg(feature = "xdg")]
+fn cleanup_old_sessions(html_base: &std::path::Path, max_age_mins: u64) {
+	let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+	let max_age_secs = max_age_mins * 60;
+
+	let Ok(entries) = std::fs::read_dir(html_base) else {
+		return;
+	};
+
+	for entry in entries.flatten() {
+		let path = entry.path();
+		if !path.is_dir() {
+			continue;
+		}
+
+		let meta_path = path.join("meta.json");
+		let created_at = if meta_path.exists() {
+			// Read created_at from meta.json
+			std::fs::read_to_string(&meta_path)
+				.ok()
+				.and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+				.and_then(|v| v["created_at"].as_u64())
+		} else {
+			// Fallback: use directory modification time
+			entry
+				.metadata()
+				.ok()
+				.and_then(|m| m.modified().ok())
+				.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+				.map(|d| d.as_secs())
+		};
+
+		if let Some(created_at) = created_at {
+			if now.saturating_sub(created_at) > max_age_secs {
+				if let Err(e) = std::fs::remove_dir_all(&path) {
+					elog!("Failed to cleanup old session {}: {}", path.display(), e);
+				} else {
+					log!("Cleaned up old session: {}", path.file_name().unwrap_or_default().to_string_lossy());
+				}
+			}
 		}
 	}
 }
