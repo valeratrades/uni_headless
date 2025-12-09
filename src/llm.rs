@@ -5,10 +5,7 @@ use color_eyre::{
 	eyre::{bail, eyre},
 };
 
-use crate::{Blank, Question};
-
-const MAX_API_RETRIES: u32 = 3;
-const RETRY_DELAY_MS: u64 = 1000;
+use crate::{Blank, Question, config::AppConfig};
 
 /// Check if an error is transient and should be retried
 fn is_transient_error(err: &color_eyre::Report) -> bool {
@@ -23,15 +20,15 @@ fn is_transient_error(err: &color_eyre::Report) -> bool {
 }
 
 /// Call LLM with retry logic for transient errors
-async fn call_with_retry(client: &LlmClient, conv: &Conversation) -> Result<Response> {
+async fn call_with_retry(client: &LlmClient, conv: &Conversation, max_retries: u32, retry_delay_ms: u64) -> Result<Response> {
 	let mut last_error = None;
-	for attempt in 0..MAX_API_RETRIES {
+	for attempt in 0..max_retries {
 		match client.conversation(conv).await {
 			Ok(response) => return Ok(response),
 			Err(e) =>
-				if is_transient_error(&e) && attempt < MAX_API_RETRIES - 1 {
-					let delay = RETRY_DELAY_MS * (attempt as u64 + 1);
-					tracing::warn!("Transient API error (attempt {}/{}): {}. Retrying in {}ms...", attempt + 1, MAX_API_RETRIES, e, delay);
+				if is_transient_error(&e) && attempt < max_retries - 1 {
+					let delay = retry_delay_ms * (attempt as u64 + 1);
+					tracing::warn!("Transient API error (attempt {}/{}): {}. Retrying in {}ms...", attempt + 1, max_retries, e, delay);
 					tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
 					last_error = Some(e);
 				} else {
@@ -182,7 +179,7 @@ async fn fetch_image_as_base64(page: &Page, url: &str) -> Result<(String, String
 }
 
 /// Ask the LLM to answer a quiz question (multiple-choice or short answer)
-pub async fn ask_llm_for_answer(page: &Page, question: &Question) -> Result<LlmAnswerResult> {
+pub async fn ask_llm_for_answer(page: &Page, question: &Question, config: &AppConfig) -> Result<LlmAnswerResult> {
 	let question_display = question.to_string();
 
 	// Handle short answer questions
@@ -212,7 +209,7 @@ Respond with JSON only, no markdown, in this exact format:
 		let mut conv = Conversation::new();
 		conv.add(Role::User, prompt);
 
-		let response = call_with_retry(&client, &conv).await?;
+		let response = call_with_retry(&client, &conv, config.api_retries, config.api_retry_delay_ms).await?;
 		tracing::debug!("LLM raw response: {}", response.text);
 
 		let json_str = response.text.trim();
@@ -250,7 +247,7 @@ Respond with JSON only, no markdown, in this exact format:
 		let mut conv = Conversation::new();
 		conv.add(Role::User, prompt);
 
-		let response = call_with_retry(&client, &conv).await?;
+		let response = call_with_retry(&client, &conv, config.api_retries, config.api_retry_delay_ms).await?;
 		tracing::debug!("LLM raw response: {}", response.text);
 
 		let json_str = response.text.trim();
@@ -318,7 +315,7 @@ For dropdown blanks, provide the exact text of the option to select (one of the 
 		let mut conv = Conversation::new();
 		conv.add(Role::User, prompt);
 
-		let response = call_with_retry(&client, &conv).await?;
+		let response = call_with_retry(&client, &conv, config.api_retries, config.api_retry_delay_ms).await?;
 		tracing::debug!("LLM raw response: {}", response.text);
 
 		let json_str = response.text.trim();
@@ -393,7 +390,7 @@ Write correct, working code. Do not include docstrings or comments."#
 		let mut conv = Conversation::new();
 		conv.add(Role::User, prompt);
 
-		let response = call_with_retry(&client, &conv).await?;
+		let response = call_with_retry(&client, &conv, config.api_retries, config.api_retry_delay_ms).await?;
 		tracing::debug!("LLM raw response: {}", response.text);
 
 		let json_str = response.text.trim();
@@ -460,7 +457,7 @@ Respond with JSON only, no markdown, in this exact format:
 	let mut conv = Conversation::new();
 	conv.add(Role::User, prompt);
 
-	let response = call_with_retry(&client, &conv).await?;
+	let response = call_with_retry(&client, &conv, config.api_retries, config.api_retry_delay_ms).await?;
 
 	tracing::debug!("LLM raw response: {}", response.text);
 
@@ -501,7 +498,7 @@ pub struct LlmCodeResult {
 }
 
 /// Ask the LLM to generate code for a VPL submission
-pub async fn ask_llm_for_code(question: &Question) -> Result<LlmCodeResult> {
+pub async fn ask_llm_for_code(question: &Question, config: &AppConfig) -> Result<LlmCodeResult> {
 	let Question::CodeSubmission { description, required_files, .. } = question else {
 		bail!("Expected CodeSubmission question");
 	};
@@ -543,7 +540,7 @@ Make sure the code is correct and ready to submit. Do not include docstrings or 
 
 	let client = LlmClient::new().model(Model::Medium).max_tokens(4096).force_json();
 
-	let response = call_with_retry(&client, &conv).await?;
+	let response = call_with_retry(&client, &conv, config.api_retries, config.api_retry_delay_ms).await?;
 
 	tracing::debug!("LLM code response: {}", response.text);
 
@@ -558,13 +555,13 @@ Make sure the code is correct and ready to submit. Do not include docstrings or 
 }
 
 /// Retry code generation with test results feedback
-pub async fn retry_llm_with_test_results(mut conversation: Conversation, test_results: &str) -> Result<LlmCodeResult> {
+pub async fn retry_llm_with_test_results(mut conversation: Conversation, test_results: &str, config: &AppConfig) -> Result<LlmCodeResult> {
 	// Add test results as a new user message (no additional commentary)
 	conversation.add(Role::User, test_results);
 
 	let client = LlmClient::new().model(Model::Medium).max_tokens(4096).force_json();
 
-	let response = call_with_retry(&client, &conversation).await?;
+	let response = call_with_retry(&client, &conversation, config.api_retries, config.api_retry_delay_ms).await?;
 
 	tracing::debug!("LLM retry response: {}", response.text);
 

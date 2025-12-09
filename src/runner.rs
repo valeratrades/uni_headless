@@ -76,7 +76,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 
 	// Ask LLM to generate code
 	log!("Asking LLM to generate code solution...");
-	let code_result = match ask_llm_for_code(&question).await {
+	let code_result = match ask_llm_for_code(&question, config).await {
 		Ok(result) => {
 			eprintln!("\nGenerated code:");
 			for (filename, content) in &result.files {
@@ -119,7 +119,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
 	// Retry loop for test failures
-	let max_retries = config.llm_retries;
+	let max_retries = config.max_consecutive_failures;
 	for attempt in 0..=max_retries {
 		if attempt > 0 {
 			log!("Retry attempt {}/{}", attempt, max_retries);
@@ -142,19 +142,16 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 		}
 		tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-		// Try to save and evaluate with retries
-		const BUTTON_CLICK_RETRIES: u32 = 5;
-
 		log!("Saving code...");
 		tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-		if !click_vpl_button_with_retry(page, "save", BUTTON_CLICK_RETRIES).await? {
+		if !click_vpl_button_with_retry(page, "save", config.button_click_retries).await? {
 			run_stop_hook(config, "Could not find Save button");
 			bail!("Could not find Save button - aborting");
 		}
 
 		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 		log!("Running evaluation...");
-		if !click_vpl_button_with_retry(page, "evaluate", BUTTON_CLICK_RETRIES).await? {
+		if !click_vpl_button_with_retry(page, "evaluate", config.button_click_retries).await? {
 			run_stop_hook(config, "Could not find Evaluate button");
 			bail!("Could not find Evaluate button - aborting");
 		}
@@ -188,7 +185,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 
 					// Ask LLM to fix the code with test results
 					log!("Asking LLM to fix the code based on test results...");
-					match retry_llm_with_test_results(conversation, &test_results).await {
+					match retry_llm_with_test_results(conversation, &test_results, config).await {
 						Ok(result) => {
 							eprintln!("\nRegenerated code:");
 							for (filename, content) in &result.files {
@@ -242,7 +239,6 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 
 	let mut question_num = 0;
 	let mut consecutive_failures = 0;
-	const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 	let mut first_page = true;
 	let mut total_questions_found = 0;
 	let mut total_answers_submitted = 0;
@@ -353,7 +349,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 		for question in &questions {
 			question_num += 1;
 
-			match ask_llm_for_answer(page, question).await {
+			match ask_llm_for_answer(page, question, config).await {
 				Ok(answer_result) => {
 					consecutive_failures = 0; // Reset on success
 
@@ -449,11 +445,11 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 						question_num,
 						e,
 						consecutive_failures,
-						MAX_CONSECUTIVE_FAILURES
+						config.max_consecutive_failures
 					);
-					if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-						run_stop_hook(config, &format!("Quiz: Exceeded {} consecutive LLM failures", MAX_CONSECUTIVE_FAILURES));
-						bail!("Exceeded {} consecutive LLM failures", MAX_CONSECUTIVE_FAILURES);
+					if consecutive_failures >= config.max_consecutive_failures {
+						run_stop_hook(config, &format!("Quiz: Exceeded {} consecutive LLM failures", config.max_consecutive_failures));
+						bail!("Exceeded {} consecutive LLM failures", config.max_consecutive_failures);
 					}
 					// Skip this question but continue with others
 				}

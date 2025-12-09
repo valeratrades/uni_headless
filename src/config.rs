@@ -13,20 +13,41 @@ pub struct AppConfig {
 	/// Command to run on completion/error (receives message as argument)
 	#[serde(default)]
 	pub stop_hook: Option<String>,
-	/// Number of retries for LLM code generation when tests fail (default: 5)
-	#[serde(default = "default_llm_retries")]
-	pub llm_retries: u32,
 	/// Max age in minutes for HTML session directories before cleanup (default: 120 = 2h)
 	#[serde(default = "default_session_max_age_mins")]
 	pub session_max_age_mins: u64,
-}
-
-fn default_llm_retries() -> u32 {
-	5
+	/// Number of retries for transient API errors (500, rate limit, etc) (default: 3)
+	#[serde(default = "default_api_retries")]
+	pub api_retries: u32,
+	/// Base delay in ms between API retries, multiplied by attempt number (default: 1000)
+	#[serde(default = "default_api_retry_delay_ms")]
+	pub api_retry_delay_ms: u64,
+	/// Max consecutive LLM failures before stopping (quiz questions or VPL code retries) (default: 5)
+	#[serde(default = "default_max_consecutive_failures")]
+	pub max_consecutive_failures: u32,
+	/// Number of retries for browser button clicks (default: 5)
+	#[serde(default = "default_button_click_retries")]
+	pub button_click_retries: u32,
 }
 
 fn default_session_max_age_mins() -> u64 {
 	120
+}
+
+fn default_api_retries() -> u32 {
+	3
+}
+
+fn default_api_retry_delay_ms() -> u64 {
+	1000
+}
+
+fn default_max_consecutive_failures() -> u32 {
+	5
+}
+
+fn default_button_click_retries() -> u32 {
+	5
 }
 
 impl AppConfig {
