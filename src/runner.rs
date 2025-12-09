@@ -236,13 +236,16 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 }
 
 /// Handle a quiz (multi-choice) page
-pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig, session_id: &str) -> Result<()> {
+/// Returns Ok(true) if at least one answer was submitted, Ok(false) if questions existed but none were answered
+pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig, session_id: &str) -> Result<bool> {
 	use v_utils::io::{ConfirmAllResult, confirm_all};
 
 	let mut question_num = 0;
 	let mut consecutive_failures = 0;
 	const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 	let mut first_page = true;
+	let mut total_questions_found = 0;
+	let mut total_answers_submitted = 0;
 
 	loop {
 		// Print page separator
@@ -279,7 +282,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 					if click_all_confirmations(page).await? {
 						// Modal confirmation clicked = quiz submitted, we're done
 						run_stop_hook(config, "Quiz submitted successfully");
-						return Ok(());
+						return Ok(total_answers_submitted > 0 || total_questions_found == 0);
 					}
 				} else {
 					log!("(set continuation_prompts = true in config to auto-click)");
@@ -291,6 +294,8 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 			wait_for_page_change(page).await?;
 			continue;
 		}
+
+		total_questions_found += questions.len();
 
 		// Display all questions on this page
 		for (i, question) in questions.iter().enumerate() {
@@ -468,7 +473,13 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 		}
 
 		if answers_to_select.is_empty() {
-			log!("No answers to submit on this page.");
+			// We had questions but couldn't get any answers from LLM
+			if total_questions_found > 0 && total_answers_submitted == 0 {
+				elog!("No answers to submit. LLM failed to answer all {} question(s).", total_questions_found);
+				elog!("This may be a transient API error. Try running again, or check your CLAUDE_TOKEN.");
+			} else {
+				log!("No answers to submit on this page.");
+			}
 			break;
 		}
 
@@ -549,10 +560,12 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 				}
 				// Submit once for all questions on this page
 				click_submit(page).await?;
+				total_answers_submitted += answers_to_select.len();
 				log!("All {} answer(s) submitted!", answers_to_select.len());
 			}
 			Some(false) => {
-				// Already submitted by user, continue to next page
+				// Already submitted by user, count as submitted
+				total_answers_submitted += answers_to_select.len();
 			}
 			None => {
 				// User said no, wait for them to submit manually
@@ -563,7 +576,8 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 		}
 	}
 
-	Ok(())
+	// Return success if we submitted at least one answer, or if there were no questions to answer
+	Ok(total_answers_submitted > 0 || total_questions_found == 0)
 }
 
 /// Click the Edit button on a VPL page to open the editor

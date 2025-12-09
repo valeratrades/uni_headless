@@ -115,19 +115,23 @@ async fn main() -> Result<()> {
 	// Process URLs
 	let mut processing_error: Option<color_eyre::Report> = None;
 
+	let mut any_failure = false;
 	for (idx, target_url) in urls.iter().enumerate() {
 		if idx > 0 {
 			log!("\n========== Processing next URL ({}/{}) ==========", idx + 1, urls.len());
 		}
 
 		match process_url(&mut browser, target_url, &mut config, args.ask_llm, args.debug_from_html, args.manual_login, &session_id).await {
-			Ok((success, _page)) => {
-				// For VPL pages, only continue to next URL if we got 100%
-				if is_vpl_url(target_url) && !success {
-					log!("Stopping - did not get perfect grade on VPL");
+			Ok((success, _page)) =>
+				if !success {
+					any_failure = true;
+					if is_vpl_url(target_url) {
+						log!("Stopping - did not get perfect grade on VPL");
+					} else {
+						log!("Stopping - failed to submit answers for quiz");
+					}
 					break;
-				}
-			}
+				},
 			Err(e) => {
 				// Error HTML is saved in process_url
 				processing_error = Some(e);
@@ -194,9 +198,13 @@ async fn main() -> Result<()> {
 		let _ = tokio::time::timeout(std::time::Duration::from_secs(2), browser.close()).await;
 	} else {
 		tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-		log!("Task completed successfully!");
 		handle.abort();
 		let _ = tokio::time::timeout(std::time::Duration::from_secs(2), browser.close()).await;
+
+		if any_failure {
+			std::process::exit(1);
+		}
+		log!("Task completed successfully!");
 	}
 
 	Ok(())
@@ -272,7 +280,7 @@ async fn process_url(
 		log!("Detected VPL (Virtual Programming Lab) page");
 		handle_vpl_page(&page, ask_llm, config, session_id).await
 	} else {
-		handle_quiz_page(&page, ask_llm, config, session_id).await.map(|_| true) // Quiz pages don't have a "success" metric
+		handle_quiz_page(&page, ask_llm, config, session_id).await
 	};
 
 	match result {

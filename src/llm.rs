@@ -1,4 +1,4 @@
-use ask_llm::{Client as LlmClient, Conversation, Model, Role};
+use ask_llm::{Client as LlmClient, Conversation, Model, Response, Role};
 use chromiumoxide::Page;
 use color_eyre::{
 	Result,
@@ -6,6 +6,41 @@ use color_eyre::{
 };
 
 use crate::{Blank, Question};
+
+const MAX_API_RETRIES: u32 = 3;
+const RETRY_DELAY_MS: u64 = 1000;
+
+/// Check if an error is transient and should be retried
+fn is_transient_error(err: &color_eyre::Report) -> bool {
+	let err_str = err.to_string();
+	// API errors that indicate transient issues
+	err_str.contains("api_error")
+		|| err_str.contains("Internal server error")
+		|| err_str.contains("overloaded")
+		|| err_str.contains("rate_limit")
+		|| err_str.contains("timeout")
+		|| err_str.contains("missing field `id`") // This happens when API returns error instead of response
+}
+
+/// Call LLM with retry logic for transient errors
+async fn call_with_retry(client: &LlmClient, conv: &Conversation) -> Result<Response> {
+	let mut last_error = None;
+	for attempt in 0..MAX_API_RETRIES {
+		match client.conversation(conv).await {
+			Ok(response) => return Ok(response),
+			Err(e) =>
+				if is_transient_error(&e) && attempt < MAX_API_RETRIES - 1 {
+					let delay = RETRY_DELAY_MS * (attempt as u64 + 1);
+					tracing::warn!("Transient API error (attempt {}/{}): {}. Retrying in {}ms...", attempt + 1, MAX_API_RETRIES, e, delay);
+					tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+					last_error = Some(e);
+				} else {
+					return Err(e);
+				},
+		}
+	}
+	Err(last_error.unwrap_or_else(|| eyre!("Retry loop exhausted without error")))
+}
 
 /// LLM response for single-choice questions
 #[derive(Debug, serde::Deserialize)]
@@ -177,7 +212,7 @@ Respond with JSON only, no markdown, in this exact format:
 		let mut conv = Conversation::new();
 		conv.add(Role::User, prompt);
 
-		let response = client.conversation(&conv).await?;
+		let response = call_with_retry(&client, &conv).await?;
 		tracing::debug!("LLM raw response: {}", response.text);
 
 		let json_str = response.text.trim();
@@ -215,7 +250,7 @@ Respond with JSON only, no markdown, in this exact format:
 		let mut conv = Conversation::new();
 		conv.add(Role::User, prompt);
 
-		let response = client.conversation(&conv).await?;
+		let response = call_with_retry(&client, &conv).await?;
 		tracing::debug!("LLM raw response: {}", response.text);
 
 		let json_str = response.text.trim();
@@ -283,7 +318,7 @@ For dropdown blanks, provide the exact text of the option to select (one of the 
 		let mut conv = Conversation::new();
 		conv.add(Role::User, prompt);
 
-		let response = client.conversation(&conv).await?;
+		let response = call_with_retry(&client, &conv).await?;
 		tracing::debug!("LLM raw response: {}", response.text);
 
 		let json_str = response.text.trim();
@@ -358,7 +393,7 @@ Write correct, working code. Do not include docstrings or comments."#
 		let mut conv = Conversation::new();
 		conv.add(Role::User, prompt);
 
-		let response = client.conversation(&conv).await?;
+		let response = call_with_retry(&client, &conv).await?;
 		tracing::debug!("LLM raw response: {}", response.text);
 
 		let json_str = response.text.trim();
@@ -425,7 +460,7 @@ Respond with JSON only, no markdown, in this exact format:
 	let mut conv = Conversation::new();
 	conv.add(Role::User, prompt);
 
-	let response = client.conversation(&conv).await?;
+	let response = call_with_retry(&client, &conv).await?;
 
 	tracing::debug!("LLM raw response: {}", response.text);
 
@@ -508,7 +543,7 @@ Make sure the code is correct and ready to submit. Do not include docstrings or 
 
 	let client = LlmClient::new().model(Model::Medium).max_tokens(4096).force_json();
 
-	let response = client.conversation(&conv).await?;
+	let response = call_with_retry(&client, &conv).await?;
 
 	tracing::debug!("LLM code response: {}", response.text);
 
@@ -529,7 +564,7 @@ pub async fn retry_llm_with_test_results(mut conversation: Conversation, test_re
 
 	let client = LlmClient::new().model(Model::Medium).max_tokens(4096).force_json();
 
-	let response = client.conversation(&conversation).await?;
+	let response = call_with_retry(&client, &conversation).await?;
 
 	tracing::debug!("LLM retry response: {}", response.text);
 
