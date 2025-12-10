@@ -287,9 +287,9 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 			}
 
 			if !config.visible {
-				elog!("No more questions found and not in visible mode - cannot wait for manual intervention");
-				run_stop_hook(config, "No more questions found (headless)");
-				return Err(eyre!("No more questions found - manual intervention required but running headless"));
+				elog!("No questions found on page. // Might be a fucky-wucky, but we're in headless, so exiting.");
+				run_stop_hook(config, "No questions found on page");
+				std::process::exit(1);
 			}
 			log!("No more questions found. Waiting for manual intervention or page change...");
 			run_stop_hook(config, "No more questions found");
