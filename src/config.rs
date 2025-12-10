@@ -25,8 +25,8 @@ pub struct AppConfig {
 	/// Number of retries for browser button clicks (default: 5)
 	#[serde(default = "default_button_click_retries")]
 	pub button_click_retries: u32,
-	/// Whether running in visible (non-headless) mode - set from CLI args, not config file
-	#[serde(skip)]
+	/// Run with visible browser window (non-headless mode)
+	#[serde(default)]
 	pub visible: bool,
 }
 

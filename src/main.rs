@@ -28,10 +28,6 @@ struct Args {
 	#[arg(short = 'd', long = "do-after")]
 	do_after: Vec<String>,
 
-	/// Run with visible browser window (non-headless mode)
-	#[arg(long)]
-	visible: bool,
-
 	/// Use LLM to answer multi-choice questions
 	#[arg(short, long)]
 	ask_llm: bool,
@@ -53,19 +49,16 @@ struct Args {
 async fn main() -> Result<()> {
 	clientside!();
 	let args = Args::parse();
-
-	if args.manual_login && !args.visible {
+	let mut config = AppConfig::try_build(args.settings)?;
+	if args.manual_login && !config.visible {
 		panic!("--manual-login requires --visible to be set");
 	}
-
-	let mut config = AppConfig::try_build(args.settings)?;
-	config.visible = args.visible;
 
 	// Session ID is just the current time HH:MM:SS
 	let session_id = Local::now().format("%H:%M:%S").to_string();
 
 	log!("Starting Moodle login automation... [session: {}]", session_id);
-	log!("Visible mode: {}", args.visible);
+	log!("Visible mode: {}", config.visible);
 
 	// Create session-specific HTML directory and cleanup old sessions
 	#[cfg(feature = "xdg")]
@@ -93,7 +86,7 @@ async fn main() -> Result<()> {
 	}
 
 	// Configure browser based on visibility flag
-	let browser_config = if args.visible {
+	let browser_config = if config.visible {
 		BrowserConfig::builder().with_head().build().map_err(|e| eyre!("Failed to build browser config: {e}"))?
 	} else {
 		BrowserConfig::builder().build().map_err(|e| eyre!("Failed to build browser config: {e}"))?
@@ -143,7 +136,7 @@ async fn main() -> Result<()> {
 
 	// If there was an error and visible mode, keep browser open for debugging
 	if let Some(ref err) = processing_error {
-		if args.visible {
+		if config.visible {
 			elog!("Error occurred: {err}");
 			log!("Keeping browser open for debugging. Press Ctrl+C to exit...");
 
@@ -173,7 +166,7 @@ async fn main() -> Result<()> {
 	}
 
 	// Keep browser open in visible mode
-	if args.visible {
+	if config.visible {
 		log!("Browser is visible. Press Ctrl+C to exit...");
 
 		static SIGINT_COUNT: AtomicUsize = AtomicUsize::new(0);
