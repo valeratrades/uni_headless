@@ -53,6 +53,9 @@ async fn main() -> Result<()> {
 	if args.manual_login && !config.visible {
 		panic!("--manual-login requires --visible to be set");
 	}
+	if config.allow_skip && (config.visible || config.continuation_prompts) {
+		panic!("--allow-skip conflicts with --visible and continuation_prompts=true");
+	}
 
 	// Session ID is just the current time HH:MM:SS
 	let session_id = Local::now().format("%H:%M:%S").to_string();

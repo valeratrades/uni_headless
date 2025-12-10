@@ -28,6 +28,9 @@ pub struct AppConfig {
 	/// Run with visible browser window (non-headless mode)
 	#[serde(default)]
 	pub visible: bool,
+	/// Allow skipping pages without submitted answers (logs error but continues)
+	#[serde(default)]
+	pub allow_skip: bool,
 }
 
 fn default_api_retries() -> u32 {

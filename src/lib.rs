@@ -69,6 +69,54 @@ pub struct MatchOption {
 	pub text: String,
 }
 
+/// A drop zone in a DragDropIntoText question
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DropZone {
+	/// The hidden input name (e.g., "q202791:5_p1")
+	pub input_name: String,
+	/// Which place number this is (1-indexed)
+	pub place_number: usize,
+	/// Currently selected choice (0 = none)
+	pub current_choice: usize,
+}
+
+/// A draggable choice in a DragDropIntoText question
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DragChoice {
+	/// The choice number (1-indexed, used as value in hidden inputs)
+	pub choice_number: usize,
+	/// The text label
+	pub text: String,
+}
+
+/// A DragDropIntoText question (qtype_ddwtos)
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DragDropIntoText {
+	/// The question prompt with drop zones indicated
+	pub question_text: String,
+	/// Available choices to drag
+	pub choices: Vec<DragChoice>,
+	/// Drop zones where choices can be placed
+	pub drop_zones: Vec<DropZone>,
+	/// Images in the question
+	#[serde(default)]
+	pub images: Vec<Image>,
+}
+
+impl fmt::Display for DragDropIntoText {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		writeln!(f, "{}", self.question_text)?;
+		writeln!(f)?;
+		writeln!(f, "Drag choices:")?;
+		for choice in &self.choices {
+			writeln!(f, "  {}. {}", choice.choice_number, choice.text)?;
+		}
+		writeln!(f)?;
+		writeln!(f, "Drop zones: {} places to fill", self.drop_zones.len())?;
+		Ok(())
+	}
+}
+
 /// A blank (input field) within a FillInBlanks question
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Blank {
@@ -237,6 +285,8 @@ pub enum Question {
 	},
 	/// Fill-in-the-blanks question with embedded text inputs and/or dropdowns
 	FillInBlanks(FillInBlanks),
+	/// Drag-and-drop into text question (qtype_ddwtos)
+	DragDropIntoText(DragDropIntoText),
 	/// Code block question (inline code editor in quiz, not full VPL page)
 	CodeBlock {
 		/// The question text/prompt
@@ -264,14 +314,20 @@ impl Question {
 			| Question::CodeBlock { question_text, .. } => question_text,
 			Question::CodeSubmission { description, .. } => description,
 			Question::FillInBlanks(fill) => &fill.question_text,
+			Question::DragDropIntoText(ddwtos) => &ddwtos.question_text,
 		}
 	}
 
-	/// Get choices for this question (empty for CodeSubmission, ShortAnswer, Matching, FillInBlanks, and CodeBlock)
+	/// Get choices for this question (empty for CodeSubmission, ShortAnswer, Matching, FillInBlanks, DragDropIntoText, and CodeBlock)
 	pub fn choices(&self) -> &[Choice] {
 		match self {
 			Question::SingleChoice { choices, .. } | Question::MultiChoice { choices, .. } => choices,
-			Question::CodeSubmission { .. } | Question::ShortAnswer { .. } | Question::Matching { .. } | Question::FillInBlanks { .. } | Question::CodeBlock { .. } => &[],
+			Question::CodeSubmission { .. }
+			| Question::ShortAnswer { .. }
+			| Question::Matching { .. }
+			| Question::FillInBlanks { .. }
+			| Question::DragDropIntoText { .. }
+			| Question::CodeBlock { .. } => &[],
 		}
 	}
 
@@ -285,6 +341,7 @@ impl Question {
 			| Question::CodeSubmission { images, .. }
 			| Question::CodeBlock { images, .. } => images,
 			Question::FillInBlanks(fill) => &fill.images,
+			Question::DragDropIntoText(ddwtos) => &ddwtos.images,
 		}
 	}
 
@@ -373,6 +430,19 @@ impl Question {
 			_ => None,
 		}
 	}
+
+	/// Returns true if this is a drag-drop-into-text question
+	pub fn is_drag_drop_into_text(&self) -> bool {
+		matches!(self, Question::DragDropIntoText { .. })
+	}
+
+	/// Get drag-drop-into-text data for DragDropIntoText questions
+	pub fn drag_drop_into_text(&self) -> Option<&DragDropIntoText> {
+		match self {
+			Question::DragDropIntoText(ddwtos) => Some(ddwtos),
+			_ => None,
+		}
+	}
 }
 
 impl fmt::Display for Question {
@@ -411,6 +481,9 @@ impl fmt::Display for Question {
 			}
 			Question::FillInBlanks(fill) => {
 				write!(f, "{}", fill)?;
+			}
+			Question::DragDropIntoText(ddwtos) => {
+				write!(f, "{}", ddwtos)?;
 			}
 			Question::CodeBlock {
 				question_text,

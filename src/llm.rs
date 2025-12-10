@@ -83,6 +83,20 @@ struct LlmCodeBlockAnswer {
 	code: String,
 }
 
+/// LLM response for drag-drop-into-text questions
+#[derive(Debug, serde::Deserialize)]
+struct LlmDragDropAnswer {
+	placements: Vec<LlmPlacement>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LlmPlacement {
+	/// The drop zone number (1-indexed)
+	place_number: usize,
+	/// The choice text to place there
+	choice: String,
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct LlmBlankAnswer {
 	/// The blank number (1-indexed as shown to the LLM)
@@ -117,6 +131,10 @@ pub enum LlmAnswerResult {
 	/// CodeBlock: the generated code to paste into the code editor
 	CodeBlock {
 		code: String,
+	},
+	/// DragDropIntoText: vector of (input_name, choice_number) to set
+	DragDropIntoText {
+		placements: Vec<(String, usize)>,
 	},
 }
 
@@ -397,6 +415,62 @@ Write correct, working code. Do not include docstrings or comments."#
 		let answer: LlmCodeBlockAnswer = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, json_str))?;
 
 		return Ok(LlmAnswerResult::CodeBlock { code: answer.code });
+	}
+
+	// Handle drag-drop-into-text questions
+	if question.is_drag_drop_into_text() {
+		let ddwtos = question.drag_drop_into_text().unwrap();
+
+		let prompt = format!(
+			r#"You are answering a drag-and-drop question. Place each choice into the correct drop zone.
+
+{question_display}
+Respond with JSON only, no markdown, in this exact format:
+{{"placements": [{{"place_number": <drop zone number>, "choice": "<the exact text of the choice to place there>"}}]}}
+
+Each place_number corresponds to a drop zone (1, 2, 3, etc.). Choose the correct option for each zone from the available choices."#
+		);
+
+		let mut client = LlmClient::new().model(Model::Medium).max_tokens(512).force_json();
+
+		// Attach question images
+		for img in question.images() {
+			match fetch_image_as_base64(page, &img.url).await {
+				Ok((base64, media_type)) => {
+					client = client.append_file(base64, media_type);
+				}
+				Err(e) => {
+					tracing::warn!("Failed to fetch image for LLM: {}", e);
+				}
+			}
+		}
+
+		let mut conv = Conversation::new();
+		conv.add(Role::User, prompt);
+
+		let response = call_with_retry(&client, &conv, config.api_retries, config.api_retry_delay_ms).await?;
+		tracing::debug!("LLM raw response: {}", response.text);
+
+		let json_str = response.text.trim();
+		let answer: LlmDragDropAnswer = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse LLM JSON response: {} - raw: '{}'", e, json_str))?;
+
+		// Convert LLM answer to placements (input_name, choice_number)
+		let mut placements = Vec::new();
+		for placement in answer.placements {
+			// Find the drop zone for this place
+			if let Some(zone) = ddwtos.drop_zones.iter().find(|z| z.place_number == placement.place_number) {
+				// Find the choice number for this choice text
+				if let Some(choice) = ddwtos.choices.iter().find(|c| c.text == placement.choice) {
+					placements.push((zone.input_name.clone(), choice.choice_number));
+				} else {
+					tracing::warn!("LLM returned unknown choice '{}' for place {}", placement.choice, placement.place_number);
+				}
+			} else {
+				tracing::warn!("LLM returned unknown place number: {}", placement.place_number);
+			}
+		}
+
+		return Ok(LlmAnswerResult::DragDropIntoText { placements });
 	}
 
 	// Handle multiple-choice questions

@@ -13,7 +13,7 @@ use v_utils::xdg_state_dir;
 use v_utils::{Percent, elog, io::confirm, log};
 
 use crate::{
-	Blank, Choice, FillInBlanks, FillSegment, Image, MatchItem, MatchOption, Question, RequiredFile,
+	Blank, Choice, DragChoice, DragDropIntoText, DropZone, FillInBlanks, FillSegment, Image, MatchItem, MatchOption, Question, RequiredFile,
 	config::AppConfig,
 	llm::{FillInBlanksAnswerItem, LlmAnswerResult, ask_llm_for_answer, ask_llm_for_code, retry_llm_with_test_results},
 };
@@ -287,6 +287,16 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 			}
 
 			if !config.visible {
+				if config.allow_skip {
+					elog!("No questions found on page. --allow-skip is set, clicking next page...");
+					if click_next_page(page).await? {
+						continue;
+					} else {
+						elog!("Could not find next page button, exiting.");
+						run_stop_hook(config, "No questions found, no next page button");
+						std::process::exit(1);
+					}
+				}
 				elog!("No questions found on page. // Might be a fucky-wucky, but we're in headless, so exiting.");
 				run_stop_hook(config, "No questions found on page");
 				std::process::exit(1);
@@ -309,6 +319,8 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 				"[fill]"
 			} else if question.is_code_block() {
 				"[code]"
+			} else if question.is_drag_drop_into_text() {
+				"[drag]"
 			} else if question.is_multi() {
 				"[multi]"
 			} else {
@@ -368,6 +380,8 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 						"[fill]"
 					} else if question.is_code_block() {
 						"[code]"
+					} else if question.is_drag_drop_into_text() {
+						"[drag]"
 					} else if question.is_multi() {
 						"[multi]"
 					} else {
@@ -438,6 +452,17 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 							}
 							if code.lines().count() > 5 {
 								answer_logs.push(format!("    ... ({} more lines)", code.lines().count() - 5));
+							}
+						}
+						LlmAnswerResult::DragDropIntoText { placements } => {
+							answer_logs.push("  Placements:".to_string());
+							if let Some(ddwtos) = question.drag_drop_into_text() {
+								for (input_name, choice_num) in placements {
+									// Find the choice text and zone number
+									let choice_text = ddwtos.choices.iter().find(|c| c.choice_number == *choice_num).map(|c| c.text.as_str()).unwrap_or("?");
+									let place_num = ddwtos.drop_zones.iter().find(|z| &z.input_name == input_name).map(|z| z.place_number).unwrap_or(0);
+									answer_logs.push(format!("    Place {} -> {}", place_num, choice_text));
+								}
 							}
 						}
 					}
@@ -556,6 +581,10 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 						LlmAnswerResult::CodeBlock { code } =>
 							if let Some(input_name) = question.code_block_input_name() {
 								set_code_editor_content(page, input_name, code).await?;
+							},
+						LlmAnswerResult::DragDropIntoText { placements } =>
+							for (input_name, choice_num) in placements {
+								set_hidden_input_value(page, input_name, &choice_num.to_string()).await?;
 							},
 					}
 				}
@@ -1081,6 +1110,55 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 					}
 				}
 
+				// Check for drag-drop-into-text questions (ddwtos)
+				if (questionWrapper && questionWrapper.classList.contains('ddwtos')) {
+					const dropZones = [];
+					const choices = [];
+
+					// Find all drop zones (place inputs)
+					const placeInputs = formulation.querySelectorAll('input.placeinput');
+					for (const input of placeInputs) {
+						// Extract place number from class (e.g., "place1", "place2")
+						const placeMatch = Array.from(input.classList).find(c => c.match(/^place(\d+)$/));
+						const placeNum = placeMatch ? parseInt(placeMatch.replace('place', ''), 10) : 0;
+						dropZones.push({
+							input_name: input.name || '',
+							place_number: placeNum,
+							current_choice: parseInt(input.value, 10) || 0
+						});
+					}
+
+					// Find all draggable choices
+					const choiceElements = formulation.querySelectorAll('.draghome:not(.dragplaceholder)');
+					for (const choiceEl of choiceElements) {
+						// Extract choice number from class (e.g., "choice1", "choice2")
+						const choiceMatch = Array.from(choiceEl.classList).find(c => c.match(/^choice(\d+)$/));
+						const choiceNum = choiceMatch ? parseInt(choiceMatch.replace('choice', ''), 10) : 0;
+						if (choiceNum > 0 && !choices.some(c => c.choice_number === choiceNum)) {
+							choices.push({
+								choice_number: choiceNum,
+								text: choiceEl.textContent.trim()
+							});
+						}
+					}
+
+					if (dropZones.length > 0 && choices.length > 0) {
+						// Sort choices by number
+						choices.sort((a, b) => a.choice_number - b.choice_number);
+						// Sort drop zones by place number
+						dropZones.sort((a, b) => a.place_number - b.place_number);
+
+						questions.push({
+							type: 'DragDropIntoText',
+							question_text: questionText,
+							choices: choices,
+							drop_zones: dropZones,
+							images: questionImages
+						});
+						continue;
+					}
+				}
+
 				// Check for fill-in-the-blanks (multianswer / cloze questions)
 				// These have .subquestion spans with inputs/selects embedded in the content
 				// Also check for inputs directly in .qtext, .ablock, or the formulation itself
@@ -1451,6 +1529,36 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 					images,
 				});
 			}
+			"DragDropIntoText" => {
+				let choices_json = item["choices"].as_array();
+				let drop_zones_json = item["drop_zones"].as_array();
+
+				if let (Some(choices_arr), Some(zones_arr)) = (choices_json, drop_zones_json) {
+					let choices: Vec<DragChoice> = choices_arr
+						.iter()
+						.map(|c| DragChoice {
+							choice_number: c["choice_number"].as_u64().unwrap_or(0) as usize,
+							text: c["text"].as_str().unwrap_or("").to_string(),
+						})
+						.collect();
+
+					let drop_zones: Vec<DropZone> = zones_arr
+						.iter()
+						.map(|z| DropZone {
+							input_name: z["input_name"].as_str().unwrap_or("").to_string(),
+							place_number: z["place_number"].as_u64().unwrap_or(0) as usize,
+							current_choice: z["current_choice"].as_u64().unwrap_or(0) as usize,
+						})
+						.collect();
+
+					questions.push(Question::DragDropIntoText(DragDropIntoText {
+						question_text,
+						choices,
+						drop_zones,
+						images,
+					}));
+				}
+			}
 			_ => {
 				let choices_json = item["choices"].as_array();
 				if let Some(choices_arr) = choices_json {
@@ -1570,6 +1678,33 @@ async fn set_select_value(page: &Page, select_name: &str, value: &str) -> Result
 	Ok(())
 }
 
+/// Set a hidden input value (used for drag-drop-into-text questions)
+async fn set_hidden_input_value(page: &Page, input_name: &str, value: &str) -> Result<()> {
+	let script = format!(
+		r#"
+		(function() {{
+			const input = document.querySelector('input[name="{}"]');
+			if (input) {{
+				input.value = "{}";
+				input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+				input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+				return true;
+			}}
+			return false;
+		}})()
+		"#,
+		input_name, value
+	);
+
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set hidden input value: {}", e))?;
+
+	if result.value().and_then(|v| v.as_bool()) != Some(true) {
+		return Err(eyre!("Failed to find hidden input element: {}", input_name));
+	}
+
+	Ok(())
+}
+
 /// Set code in a code editor (ACE editor or textarea with code-editor role)
 async fn set_code_editor_content(page: &Page, input_name: &str, code: &str) -> Result<()> {
 	// Escape special characters for JavaScript string
@@ -1661,6 +1796,44 @@ async fn click_submit(page: &Page) -> Result<()> {
 	tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
 	Ok(())
+}
+
+/// Click the next page button without submitting answers
+/// Returns true if found and clicked, false if not found
+async fn click_next_page(page: &Page) -> Result<bool> {
+	let script = r#"
+		(function() {
+			// Look for "Next page" navigation links/buttons (common in Moodle quizzes)
+			const selectors = [
+				'.mod_quiz-next-nav',
+				'a[href*="page="]',
+				'input[name="next"]',
+				'button[name="next"]',
+				'.submitbtns input[type="submit"][value*="Next"]',
+				'.submitbtns input[type="submit"][value*="Suivant"]',
+				'.submitbtns input[type="submit"][value*="Page suivante"]'
+			];
+
+			for (const selector of selectors) {
+				const btn = document.querySelector(selector);
+				if (btn) {
+					btn.click();
+					return true;
+				}
+			}
+			return false;
+		})()
+	"#;
+
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click next page: {}", e))?;
+
+	let clicked = result.value().and_then(|v| v.as_bool()).unwrap_or(false);
+	if clicked {
+		// Wait for page to load
+		tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+	}
+
+	Ok(clicked)
 }
 
 /// Wait for the page URL to change (indicating form submission)
