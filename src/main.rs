@@ -289,7 +289,7 @@ async fn process_url(
 			// Save error page HTML before returning error
 			#[cfg(feature = "xdg")]
 			if let Err(save_err) = save_page_html(&page, "errored_on", session_id).await {
-				elog!("Failed to save error page HTML: {}", save_err);
+				elog!("Failed to save error page HTML: {save_err}");
 			}
 			Err(e)
 		}
@@ -329,13 +329,13 @@ fn cleanup_old_sessions(html_base: &std::path::Path, max_age_mins: u64) {
 				.map(|d| d.as_secs())
 		};
 
-		if let Some(created_at) = created_at {
-			if now.saturating_sub(created_at) > max_age_secs {
-				if let Err(e) = std::fs::remove_dir_all(&path) {
-					elog!("Failed to cleanup old session {}: {}", path.display(), e);
-				} else {
-					log!("Cleaned up old session: {}", path.file_name().unwrap_or_default().to_string_lossy());
-				}
+		if let Some(created_at) = created_at
+			&& now.saturating_sub(created_at) > max_age_secs
+		{
+			if let Err(e) = std::fs::remove_dir_all(&path) {
+				elog!("Failed to cleanup old session {}: {}", path.display(), e);
+			} else {
+				log!("Cleaned up old session: {}", path.file_name().unwrap_or_default().to_string_lossy());
 			}
 		}
 	}

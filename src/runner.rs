@@ -471,7 +471,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 		if answers_to_select.is_empty() {
 			// We had questions but couldn't get any answers from LLM
 			if total_questions_found > 0 && total_answers_submitted == 0 {
-				elog!("No answers to submit. LLM failed to answer all {} question(s).", total_questions_found);
+				elog!("No answers to submit. LLM failed to answer all {total_questions_found} question(s).");
 				elog!("This may be a transient API error. Try running again, or check your CLAUDE_TOKEN.");
 			} else {
 				log!("No answers to submit on this page.");
