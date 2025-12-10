@@ -15,6 +15,7 @@ xdg = ["v_utils/xdg"]
 ask_llm = { version = "^2.1.0" }
 base64 = "0.22"
 chromiumoxide = { version = "0.8", features = ["tokio-runtime"] }
+chrono = "0.4.42"
 clap = { version = "4", features = ["derive"] }
 color-eyre = "^0.6.5"
 derive-new = "^0"

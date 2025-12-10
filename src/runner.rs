@@ -127,7 +127,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 
 		// Save the editor page HTML
 		#[cfg(feature = "xdg")]
-		if let Err(e) = save_page_html(page, "vpl_editor", session_id).await {
+		if let Err(e) = save_page_html(page, session_id).await {
 			elog!("Failed to save editor page HTML: {e}");
 		}
 
@@ -258,7 +258,8 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 		first_page = false;
 
 		// Save page HTML before parsing for debugging
-		if let Err(e) = save_page_html(page, "quiz_page", session_id).await {
+		#[cfg(feature = "xdg")]
+		if let Err(e) = save_page_html(page, session_id).await {
 			elog!("Failed to save quiz page HTML: {e}");
 		}
 
@@ -285,6 +286,11 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 				}
 			}
 
+			if !config.visible {
+				elog!("No more questions found and not in visible mode - cannot wait for manual intervention");
+				run_stop_hook(config, "No more questions found (headless)");
+				return Err(eyre!("No more questions found - manual intervention required but running headless"));
+			}
 			log!("No more questions found. Waiting for manual intervention or page change...");
 			run_stop_hook(config, "No more questions found");
 			wait_for_page_change(page).await?;
@@ -1905,10 +1911,14 @@ pub async fn parse_vpl_page(page: &Page) -> Result<Option<Question>> {
 }
 
 /// Save the current page's HTML to disk for debugging
+/// Uses the page URL as the filename label
 #[cfg(feature = "xdg")]
-pub async fn save_page_html(page: &Page, label: &str, session_id: &str) -> Result<PathBuf> {
+pub async fn save_page_html(page: &Page, session_id: &str) -> Result<PathBuf> {
 	let html_dir = xdg_state_dir!("persist_htmls").join(session_id);
 	std::fs::create_dir_all(&html_dir).map_err(|e| eyre!("Failed to create HTML dir: {}", e))?;
+
+	let url = page.url().await.ok().flatten().unwrap_or_default();
+	let label = url.replace("https://", "").replace("http://", "");
 
 	let html = page.evaluate("document.documentElement.outerHTML").await.map_err(|e| eyre!("Failed to get page HTML: {}", e))?;
 	let html_str = html.value().and_then(|v| v.as_str()).unwrap_or("<html></html>");

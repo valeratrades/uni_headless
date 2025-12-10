@@ -1,10 +1,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use chromiumoxide::browser::{Browser, BrowserConfig};
+use chrono::Local;
 use clap::Parser;
 use color_eyre::{Result, eyre::eyre};
 use futures::StreamExt;
-use rand::Rng;
 #[cfg(feature = "xdg")]
 use uni_headless::runner::save_page_html;
 use uni_headless::{
@@ -59,24 +59,10 @@ async fn main() -> Result<()> {
 	}
 
 	let mut config = AppConfig::try_build(args.settings)?;
+	config.visible = args.visible;
 
-	// Generate random 4-hex-digit session ID, avoiding collisions with existing sessions
-	let session_id: String = {
-		#[cfg(feature = "xdg")]
-		{
-			let html_base = xdg_state_dir!("persist_htmls");
-			loop {
-				let candidate = format!("{:04x}", rand::rng().random_range(0..0x10000u32));
-				if !html_base.join(&candidate).exists() {
-					break candidate;
-				}
-			}
-		}
-		#[cfg(not(feature = "xdg"))]
-		{
-			format!("{:04x}", rand::rng().random_range(0..0x10000u32))
-		}
-	};
+	// Session ID is just the current time HH:MM:SS
+	let session_id = Local::now().format("%H:%M:%S").to_string();
 
 	log!("Starting Moodle login automation... [session: {}]", session_id);
 	log!("Visible mode: {}", args.visible);
@@ -102,8 +88,8 @@ async fn main() -> Result<()> {
 			elog!("Failed to write meta.json: {}", e);
 		}
 
-		// Cleanup old sessions
-		cleanup_old_sessions(&html_base, config.session_max_age_mins);
+		// Cleanup old sessions (older than 12 hours)
+		cleanup_old_sessions(&html_base);
 	}
 
 	// Configure browser based on visibility flag
@@ -277,11 +263,8 @@ async fn process_url(
 
 	// Save the page HTML for debugging
 	#[cfg(feature = "xdg")]
-	{
-		let url_label = final_url.as_deref().unwrap_or("unknown").replace("https://", "").replace("http://", "");
-		if let Err(e) = save_page_html(&page, &url_label, session_id).await {
-			elog!("Failed to save page HTML: {}", e);
-		}
+	if let Err(e) = save_page_html(&page, session_id).await {
+		elog!("Failed to save page HTML: {}", e);
 	}
 
 	// Check if this is a VPL page
@@ -303,7 +286,7 @@ async fn process_url(
 		Err(e) => {
 			// Save error page HTML before returning error
 			#[cfg(feature = "xdg")]
-			if let Err(save_err) = save_page_html(&page, "errored_on", session_id).await {
+			if let Err(save_err) = save_page_html(&page, session_id).await {
 				elog!("Failed to save error page HTML: {save_err}");
 			}
 			Err(e)
@@ -311,11 +294,11 @@ async fn process_url(
 	}
 }
 
-/// Cleanup session directories older than max_age_mins
+/// Cleanup session directories older than 12 hours
 #[cfg(feature = "xdg")]
-fn cleanup_old_sessions(html_base: &std::path::Path, max_age_mins: u64) {
+fn cleanup_old_sessions(html_base: &std::path::Path) {
 	let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-	let max_age_secs = max_age_mins * 60;
+	let max_age_secs = 12 * 60 * 60; // 12 hours
 
 	let Ok(entries) = std::fs::read_dir(html_base) else {
 		return;
