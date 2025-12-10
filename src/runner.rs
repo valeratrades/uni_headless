@@ -1040,7 +1040,14 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 			for (const formulation of formulations) {
 				const qtextEl = formulation.querySelector('.qtext');
 				// For multianswer questions, qtext may not exist - question is directly in formulation
-				const questionText = extractTextWithLatex(qtextEl) || '';
+				// In that case, extract text from the filter_mathjaxloader_equation span
+				let questionText = extractTextWithLatex(qtextEl) || '';
+				if (!questionText) {
+					const mathjaxSpan = formulation.querySelector('.filter_mathjaxloader_equation');
+					if (mathjaxSpan) {
+						questionText = extractTextWithLatex(mathjaxSpan) || '';
+					}
+				}
 				const questionImages = extractImages(qtextEl) || extractImages(formulation);
 
 				// Check for code block questions (vplquestion with code-editor textarea)
@@ -1081,8 +1088,10 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 				const hasInlineSelect = formulation.querySelector('.qtext select, .ablock select, .subquestion select') !== null;
 				const hasInlineTextInput = formulation.querySelector('.qtext input[type="text"], .ablock input[type="text"], .subquestion input[type="text"]') !== null;
 
-				// If we have multiple inline inputs OR a mix of text inputs and selects, it's fill-in-blanks
-				if (hasMultipleInlineInputs || (hasInlineSelect && hasInlineTextInput)) {
+				// If we have multiple inline inputs OR a mix of text inputs and selects OR any subquestion inputs, it's fill-in-blanks
+				// (single subquestion input should also be parsed as fill-in-blanks to preserve context)
+				const hasSubquestionInputs = subquestionInputs.length > 0;
+				if (hasMultipleInlineInputs || (hasInlineSelect && hasInlineTextInput) || hasSubquestionInputs) {
 					// Parse segments: walk through the formulation content and extract text/blanks in order
 					// Use formulation itself since content may be directly in it (multianswer questions)
 					const contentArea = formulation;
