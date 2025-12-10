@@ -367,7 +367,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 					} else {
 						"[single]"
 					};
-					answer_logs.push(format!("Question {} {} answer:", question_num, type_marker));
+					answer_logs.push(format!("Question {question_num} {type_marker} answer:"));
 					match &answer_result {
 						LlmAnswerResult::Single { idx, text } => {
 							answer_logs.push(format!("  Selected: {}. {}", idx + 1, text));
@@ -428,7 +428,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 							let lines: Vec<&str> = code.lines().take(5).collect();
 							answer_logs.push("  Code:".to_string());
 							for line in lines {
-								answer_logs.push(format!("    {}", line));
+								answer_logs.push(format!("    {line}"));
 							}
 							if code.lines().count() > 5 {
 								answer_logs.push(format!("    ... ({} more lines)", code.lines().count() - 5));
@@ -441,10 +441,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 				Err(e) => {
 					consecutive_failures += 1;
 					elog!(
-						"Failed to get LLM answer for question {}: {} ({}/{})",
-						question_num,
-						e,
-						consecutive_failures,
+						"Failed to get LLM answer for question {question_num}: {e} ({consecutive_failures}/{})",
 						config.max_consecutive_failures
 					);
 					if consecutive_failures >= config.max_consecutive_failures {
@@ -460,7 +457,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 		if !answer_logs.is_empty() {
 			let mut output = String::from("\n");
 			for line in &answer_logs {
-				tracing::info!("{}", line);
+				tracing::info!("{line}");
 				output.push_str(line);
 				output.push('\n');
 			}
@@ -471,11 +468,13 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 		if answers_to_select.is_empty() {
 			// We had questions but couldn't get any answers from LLM
 			if total_questions_found > 0 && total_answers_submitted == 0 {
-				elog!("No answers to submit. LLM failed to answer all {total_questions_found} question(s).");
-				elog!("This may be a transient API error. Try running again, or check your CLAUDE_TOKEN.");
+				elog!(
+					"No answers to submit. LLM failed to answer all {total_questions_found} question(s).\nThis may be a transient API error. Try running again, or check your CLAUDE_TOKEN."
+				);
 			} else {
 				log!("No answers to submit on this page.");
 			}
+
 			break;
 		}
 

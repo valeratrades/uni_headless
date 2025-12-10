@@ -60,8 +60,23 @@ async fn main() -> Result<()> {
 
 	let mut config = AppConfig::try_build(args.settings)?;
 
-	// Generate random 4-hex-digit session ID
-	let session_id: String = format!("{:04x}", rand::rng().random_range(0..0x10000u32));
+	// Generate random 4-hex-digit session ID, avoiding collisions with existing sessions
+	let session_id: String = {
+		#[cfg(feature = "xdg")]
+		{
+			let html_base = xdg_state_dir!("persist_htmls");
+			loop {
+				let candidate = format!("{:04x}", rand::rng().random_range(0..0x10000u32));
+				if !html_base.join(&candidate).exists() {
+					break candidate;
+				}
+			}
+		}
+		#[cfg(not(feature = "xdg"))]
+		{
+			format!("{:04x}", rand::rng().random_range(0..0x10000u32))
+		}
+	};
 
 	log!("Starting Moodle login automation... [session: {}]", session_id);
 	log!("Visible mode: {}", args.visible);
