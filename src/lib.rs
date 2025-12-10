@@ -76,6 +76,8 @@ pub struct DropZone {
 	pub input_name: String,
 	/// Which place number this is (1-indexed)
 	pub place_number: usize,
+	/// Which group this zone belongs to (1-indexed)
+	pub group: usize,
 	/// Currently selected choice (0 = none)
 	pub current_choice: usize,
 }
@@ -85,6 +87,8 @@ pub struct DropZone {
 pub struct DragChoice {
 	/// The choice number (1-indexed, used as value in hidden inputs)
 	pub choice_number: usize,
+	/// Which group this choice belongs to (1-indexed)
+	pub group: usize,
 	/// The text label
 	pub text: String,
 }
@@ -109,7 +113,7 @@ impl fmt::Display for DragDropIntoText {
 		writeln!(f)?;
 		writeln!(f, "Drag choices:")?;
 		for choice in &self.choices {
-			writeln!(f, "  {}. {}", choice.choice_number, choice.text)?;
+			writeln!(f, "  - {}", choice.text)?;
 		}
 		writeln!(f)?;
 		writeln!(f, "Drop zones: {} places to fill", self.drop_zones.len())?;

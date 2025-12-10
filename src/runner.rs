@@ -1121,9 +1121,13 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 						// Extract place number from class (e.g., "place1", "place2")
 						const placeMatch = Array.from(input.classList).find(c => c.match(/^place(\d+)$/));
 						const placeNum = placeMatch ? parseInt(placeMatch.replace('place', ''), 10) : 0;
+						// Extract group number from class (e.g., "group1", "group2")
+						const groupMatch = Array.from(input.classList).find(c => c.match(/^group(\d+)$/));
+						const groupNum = groupMatch ? parseInt(groupMatch.replace('group', ''), 10) : 1;
 						dropZones.push({
 							input_name: input.name || '',
 							place_number: placeNum,
+							group: groupNum,
 							current_choice: parseInt(input.value, 10) || 0
 						});
 					}
@@ -1134,9 +1138,15 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 						// Extract choice number from class (e.g., "choice1", "choice2")
 						const choiceMatch = Array.from(choiceEl.classList).find(c => c.match(/^choice(\d+)$/));
 						const choiceNum = choiceMatch ? parseInt(choiceMatch.replace('choice', ''), 10) : 0;
-						if (choiceNum > 0 && !choices.some(c => c.choice_number === choiceNum)) {
+						// Extract group number from class (e.g., "group1", "group2")
+						const groupMatch = Array.from(choiceEl.classList).find(c => c.match(/^group(\d+)$/));
+						const groupNum = groupMatch ? parseInt(groupMatch.replace('group', ''), 10) : 1;
+						// Use combo of choice+group as unique key since choice numbers can repeat across groups
+						const uniqueKey = `${groupNum}-${choiceNum}`;
+						if (choiceNum > 0 && !choices.some(c => `${c.group}-${c.choice_number}` === uniqueKey)) {
 							choices.push({
 								choice_number: choiceNum,
+								group: groupNum,
 								text: choiceEl.textContent.trim()
 							});
 						}
@@ -1538,6 +1548,7 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 						.iter()
 						.map(|c| DragChoice {
 							choice_number: c["choice_number"].as_u64().unwrap_or(0) as usize,
+							group: c["group"].as_u64().unwrap_or(1) as usize,
 							text: c["text"].as_str().unwrap_or("").to_string(),
 						})
 						.collect();
@@ -1547,6 +1558,7 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 						.map(|z| DropZone {
 							input_name: z["input_name"].as_str().unwrap_or("").to_string(),
 							place_number: z["place_number"].as_u64().unwrap_or(0) as usize,
+							group: z["group"].as_u64().unwrap_or(1) as usize,
 							current_choice: z["current_choice"].as_u64().unwrap_or(0) as usize,
 						})
 						.collect();

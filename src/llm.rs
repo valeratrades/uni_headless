@@ -428,7 +428,8 @@ Write correct, working code. Do not include docstrings or comments."#
 Respond with JSON only, no markdown, in this exact format:
 {{"placements": [{{"place_number": <drop zone number>, "choice": "<the exact text of the choice to place there>"}}]}}
 
-Each place_number corresponds to a drop zone (1, 2, 3, etc.). Choose the correct option for each zone from the available choices."#
+Each place_number corresponds to a drop zone (1, 2, 3, etc.). Choose the correct option for each zone from the available choices.
+IMPORTANT: Each drop zone can only accept choices from its group. Match the groups correctly."#
 		);
 
 		let mut client = LlmClient::new().model(Model::Medium).max_tokens(512).force_json();
@@ -459,11 +460,11 @@ Each place_number corresponds to a drop zone (1, 2, 3, etc.). Choose the correct
 		for placement in answer.placements {
 			// Find the drop zone for this place
 			if let Some(zone) = ddwtos.drop_zones.iter().find(|z| z.place_number == placement.place_number) {
-				// Find the choice number for this choice text
-				if let Some(choice) = ddwtos.choices.iter().find(|c| c.text == placement.choice) {
+				// Find the choice by text AND matching group (choices from same group as the zone)
+				if let Some(choice) = ddwtos.choices.iter().find(|c| c.text == placement.choice && c.group == zone.group) {
 					placements.push((zone.input_name.clone(), choice.choice_number));
 				} else {
-					tracing::warn!("LLM returned unknown choice '{}' for place {}", placement.choice, placement.place_number);
+					tracing::warn!("LLM returned unknown choice '{}' for place {} (group {})", placement.choice, placement.place_number, zone.group);
 				}
 			} else {
 				tracing::warn!("LLM returned unknown place number: {}", placement.place_number);
