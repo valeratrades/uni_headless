@@ -106,8 +106,16 @@ async fn main() -> Result<()> {
 	});
 
 	// Build URL queue: first the target, then do_after URLs
-	let mut urls: Vec<String> = vec![args.target_url.clone()];
-	urls.extend(args.do_after.clone());
+	// Normalize URLs: add https:// if no scheme is present
+	let normalize_url = |url: String| -> String {
+		if url.starts_with("http://") || url.starts_with("https://") {
+			url
+		} else {
+			format!("https://{}", url)
+		}
+	};
+	let mut urls: Vec<String> = vec![normalize_url(args.target_url.clone())];
+	urls.extend(args.do_after.iter().cloned().map(normalize_url));
 
 	// Process URLs
 	let mut processing_error: Option<color_eyre::Report> = None;
