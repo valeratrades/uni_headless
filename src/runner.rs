@@ -24,7 +24,7 @@ fn run_stop_hook(config: &AppConfig, message: &str) {
 		log!("Running stop hook: {} {:?}", hook, message);
 		// Escape single quotes for shell: replace ' with '\''
 		let escaped = message.replace('\'', "'\\''");
-		let _ = tokio::process::Command::new("sh").arg("-c").arg(format!("{} '{}'", hook, escaped)).spawn();
+		let _ = tokio::process::Command::new("sh").arg("-c").arg(format!("{hook} '{escaped}'")).spawn();
 	}
 }
 
@@ -40,12 +40,12 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 
 	// Display the question
 	let header = "--- Code Submission [VPL] ---";
-	tracing::info!("{}", header);
-	eprintln!("{}", header);
+	tracing::info!("{header}");
+	eprintln!("{header}");
 
 	let text = question.question_text();
-	tracing::info!("{}", text);
-	eprintln!("{}", text);
+	tracing::info!("{text}");
+	eprintln!("{text}");
 
 	// Display images
 	for img in question.images() {
@@ -80,8 +80,8 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 		Ok(result) => {
 			eprintln!("\nGenerated code:");
 			for (filename, content) in &result.files {
-				eprintln!("\n=== {} ===", filename);
-				eprintln!("{}", content);
+				eprintln!("\n=== {filename} ===");
+				eprintln!("{content}");
 			}
 			eprintln!();
 			result
@@ -122,7 +122,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 	let max_retries = config.max_consecutive_failures;
 	for attempt in 0..=max_retries {
 		if attempt > 0 {
-			log!("Retry attempt {}/{}", attempt, max_retries);
+			log!("Retry attempt {attempt}/{max_retries}");
 		}
 
 		// Save the editor page HTML
@@ -181,7 +181,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 				let test_results = parse_vpl_test_results(page).await?;
 				if let Some(test_results) = test_results {
 					eprintln!("\n=== Test Failure Details ===");
-					eprintln!("{}", test_results);
+					eprintln!("{test_results}");
 
 					// Ask LLM to fix the code with test results
 					log!("Asking LLM to fix the code based on test results...");
@@ -208,7 +208,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 						}
 						Err(e) => {
 							elog!("Failed to regenerate code: {}", e);
-							run_stop_hook(config, &format!("VPL: Failed to regenerate code: {}", e));
+							run_stop_hook(config, &format!("VPL: Failed to regenerate code: {e}"));
 							bail!("Evaluation failed: got {} (expected 100%)", grade * Percent(1.0));
 						}
 					}
@@ -327,12 +327,12 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 				"[single]"
 			};
 			let header = format!("--- Question {} {} ---", question_num + i + 1, type_marker);
-			tracing::info!("{}", header);
-			eprintln!("{}", header);
+			tracing::info!("{header}");
+			eprintln!("{header}");
 
 			let question_str = question.to_string();
-			tracing::info!("{}", question_str);
-			eprint!("{}", question_str);
+			tracing::info!("{question_str}");
+			eprint!("{question_str}");
 
 			// Display question images
 			for img in question.images() {
@@ -399,7 +399,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 							}
 						}
 						LlmAnswerResult::Text { answer } => {
-							answer_logs.push(format!("  Answer: {}", answer));
+							answer_logs.push(format!("  Answer: {answer}"));
 						}
 						LlmAnswerResult::Matching { selections } => {
 							answer_logs.push("  Matches:".to_string());
@@ -409,7 +409,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 								for item in question.match_items() {
 									if &item.select_name == select_name {
 										let answer_text = item.options.iter().find(|o| &o.value == value).map(|o| o.text.as_str()).unwrap_or("?");
-										answer_logs.push(format!("    {} -> {}", item.prompt, answer_text));
+										answer_logs.push(format!("    {} -> {answer_text}", item.prompt));
 										break;
 									}
 								}
@@ -461,7 +461,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 									// Find the choice text and zone number
 									let choice_text = ddwtos.choices.iter().find(|c| c.choice_number == *choice_num).map(|c| c.text.as_str()).unwrap_or("?");
 									let place_num = ddwtos.drop_zones.iter().find(|z| &z.input_name == input_name).map(|z| z.place_number).unwrap_or(0);
-									answer_logs.push(format!("    Place {} -> {}", place_num, choice_text));
+									answer_logs.push(format!("    Place {place_num} -> {choice_text}"));
 								}
 							}
 						}
@@ -493,7 +493,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 				output.push('\n');
 			}
 			output.push('\n');
-			print!("{}", output);
+			print!("{output}");
 		}
 
 		if answers_to_select.is_empty() {
@@ -641,8 +641,8 @@ async fn click_vpl_edit_button(page: &Page) -> Result<bool> {
 /// Returns Ok(true) if clicked, Ok(false) if button not found, Err if click failed
 async fn click_vpl_button(page: &Page, action: &str) -> Result<bool> {
 	// First, try to find by exact ID
-	let button_id = format!("vpl_ide_{}", action);
-	let selector = format!("#{}", button_id);
+	let button_id = format!("vpl_ide_{action}");
+	let selector = format!("#{button_id}");
 
 	// Try to find and click the element using CDP
 	let el = page.find_element(&selector).await;
@@ -652,7 +652,7 @@ async fn click_vpl_button(page: &Page, action: &str) -> Result<bool> {
 	}
 
 	// Fallback: search by title attribute containing the action
-	let fallback_selector = format!(r#"[id^="vpl_ide_"][title*="{}" i]"#, action);
+	let fallback_selector = format!(r#"[id^="vpl_ide_"][title*="{action}" i]"#);
 	let el = page.find_element(&fallback_selector).await;
 	if let Ok(element) = el {
 		element.click().await.map_err(|e| eyre!("Failed to click element: {}", e))?;
@@ -695,8 +695,8 @@ async fn set_vpl_file_content(page: &Page, filename: &str, content: &str) -> Res
 	let script = format!(
 		r#"
 		(function() {{
-			const filename = "{}";
-			const content = `{}`;
+			const filename = "{filename}";
+			const content = `{escaped_content}`;
 
 			// VPL uses ACE editor - find and set content
 			if (typeof ace !== 'undefined') {{
@@ -737,8 +737,7 @@ async fn set_vpl_file_content(page: &Page, filename: &str, content: &str) -> Res
 
 			return false;
 		}})()
-		"#,
-		filename, escaped_content
+		"#
 	);
 
 	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set file content: {}", e))?;
@@ -1617,12 +1616,11 @@ async fn toggle_answer(page: &Page, input_name: &str, input_value: &str) -> Resu
 	let script = format!(
 		r#"
 		(function() {{
-			const input = document.querySelector('input[name="{}"][value="{}"]');
+			const input = document.querySelector('input[name="{input_name}"][value="{input_value}"]');
 			if (input) {{ input.click(); return true; }}
 			return false;
 		}})()
-		"#,
-		input_name, input_value
+		"#
 	);
 
 	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to select answer: {}", e))?;
@@ -1642,17 +1640,16 @@ async fn set_text_answer(page: &Page, input_name: &str, answer: &str) -> Result<
 	let script = format!(
 		r#"
 		(function() {{
-			const input = document.querySelector('input[name="{}"]');
+			const input = document.querySelector('input[name="{input_name}"]');
 			if (input) {{
-				input.value = "{}";
+				input.value = "{escaped_answer}";
 				input.dispatchEvent(new Event('input', {{ bubbles: true }}));
 				input.dispatchEvent(new Event('change', {{ bubbles: true }}));
 				return true;
 			}}
 			return false;
 		}})()
-		"#,
-		input_name, escaped_answer
+		"#
 	);
 
 	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set text answer: {}", e))?;
@@ -1669,16 +1666,15 @@ async fn set_select_value(page: &Page, select_name: &str, value: &str) -> Result
 	let script = format!(
 		r#"
 		(function() {{
-			const select = document.querySelector('select[name="{}"]');
+			const select = document.querySelector('select[name="{select_name}"]');
 			if (select) {{
-				select.value = "{}";
+				select.value = "{value}";
 				select.dispatchEvent(new Event('change', {{ bubbles: true }}));
 				return true;
 			}}
 			return false;
 		}})()
-		"#,
-		select_name, value
+		"#
 	);
 
 	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set select value: {}", e))?;
@@ -1695,17 +1691,16 @@ async fn set_hidden_input_value(page: &Page, input_name: &str, value: &str) -> R
 	let script = format!(
 		r#"
 		(function() {{
-			const input = document.querySelector('input[name="{}"]');
+			const input = document.querySelector('input[name="{input_name}"]');
 			if (input) {{
-				input.value = "{}";
+				input.value = "{value}";
 				input.dispatchEvent(new Event('input', {{ bubbles: true }}));
 				input.dispatchEvent(new Event('change', {{ bubbles: true }}));
 				return true;
 			}}
 			return false;
 		}})()
-		"#,
-		input_name, value
+		"#
 	);
 
 	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set hidden input value: {}", e))?;
@@ -1731,8 +1726,8 @@ async fn set_code_editor_content(page: &Page, input_name: &str, code: &str) -> R
 	let script = format!(
 		r#"
 		(function() {{
-			const inputName = "{}";
-			const code = `{}`;
+			const inputName = "{input_name}";
+			const code = `{escaped_code}`;
 
 			// Find the textarea with this name
 			const textarea = document.querySelector('textarea[name="' + inputName + '"]');
@@ -1765,8 +1760,7 @@ async fn set_code_editor_content(page: &Page, input_name: &str, code: &str) -> R
 			textarea.dispatchEvent(new Event('change', {{ bubbles: true }}));
 			return true;
 		}})()
-		"#,
-		input_name, escaped_code
+		"#
 	);
 
 	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set code editor content: {}", e))?;
@@ -1875,7 +1869,7 @@ async fn display_image_chafa(page: &Page, url: &str, max_cols: u32) -> Result<()
 		r#"
 		(async function() {{
 			try {{
-				const response = await fetch("{}");
+				const response = await fetch("{url}");
 				if (!response.ok) return null;
 				const blob = await response.blob();
 				return new Promise((resolve) => {{
@@ -1885,8 +1879,7 @@ async fn display_image_chafa(page: &Page, url: &str, max_cols: u32) -> Result<()
 				}});
 			}} catch (e) {{ return null; }}
 		}})()
-		"#,
-		url
+		"#
 	);
 
 	let result = page.evaluate(fetch_script).await.map_err(|e| eyre!("Failed to fetch image via browser: {}", e))?;
@@ -1903,7 +1896,7 @@ async fn display_image_chafa(page: &Page, url: &str, max_cols: u32) -> Result<()
 
 	let output = Command::new("chafa")
 		.arg("--size")
-		.arg(format!("{}x", max_cols))
+		.arg(format!("{max_cols}x"))
 		.arg(&temp_path)
 		.stdout(Stdio::piped())
 		.stderr(Stdio::piped())
@@ -2111,7 +2104,7 @@ pub async fn save_page_html(page: &Page, session_id: &str) -> Result<PathBuf> {
 	let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
 	let safe_label: String = label.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
 
-	let filename = format!("{}_{}.html", timestamp, safe_label);
+	let filename = format!("{timestamp}_{safe_label}.html");
 	let filepath = html_dir.join(&filename);
 
 	std::fs::write(&filepath, html_str).map_err(|e| eyre!("Failed to write HTML file: {}", e))?;

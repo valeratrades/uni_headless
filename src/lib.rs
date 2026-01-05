@@ -149,7 +149,7 @@ impl fmt::Display for Blank {
 				if current_value.is_empty() {
 					write!(f, "[___]")
 				} else {
-					write!(f, "[{}]", current_value)
+					write!(f, "[{current_value}]")
 				},
 			Blank::Select { options, .. } => {
 				let available: Vec<&str> = options.iter().filter(|o| !o.value.is_empty()).map(|o| o.text.as_str()).collect();
@@ -194,7 +194,7 @@ impl fmt::Display for FillInBlanks {
 		write!(f, "Fill in: ")?;
 		for segment in &self.segments {
 			match segment {
-				FillSegment::Text(text) => write!(f, "{}", text)?,
+				FillSegment::Text(text) => write!(f, "{text}")?,
 				FillSegment::Blank(idx) => write!(f, "[{}]", idx + 1)?,
 			}
 		}
@@ -453,24 +453,24 @@ impl fmt::Display for Question {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			Question::SingleChoice { question_text, choices, .. } | Question::MultiChoice { question_text, choices, .. } => {
-				writeln!(f, "{}", question_text)?;
+				writeln!(f, "{question_text}")?;
 				writeln!(f)?;
 				for (i, choice) in choices.iter().enumerate() {
 					writeln!(f, "{}. {}", i + 1, choice.text)?;
 				}
 			}
 			Question::ShortAnswer { question_text, .. } => {
-				writeln!(f, "{}", question_text)?;
+				writeln!(f, "{question_text}")?;
 			}
 			Question::Matching { question_text, items, .. } => {
-				writeln!(f, "{}", question_text)?;
+				writeln!(f, "{question_text}")?;
 				writeln!(f)?;
 				for (i, item) in items.iter().enumerate() {
 					writeln!(f, "{}. {}", i + 1, item)?;
 				}
 			}
 			Question::CodeSubmission { description, required_files, .. } => {
-				writeln!(f, "{}", description)?;
+				writeln!(f, "{description}")?;
 				if !required_files.is_empty() {
 					writeln!(f)?;
 					writeln!(f, "Required files:")?;
@@ -484,10 +484,10 @@ impl fmt::Display for Question {
 				}
 			}
 			Question::FillInBlanks(fill) => {
-				write!(f, "{}", fill)?;
+				write!(f, "{fill}")?;
 			}
 			Question::DragDropIntoText(ddwtos) => {
-				write!(f, "{}", ddwtos)?;
+				write!(f, "{ddwtos}")?;
 			}
 			Question::CodeBlock {
 				question_text,
@@ -495,9 +495,9 @@ impl fmt::Display for Question {
 				current_code,
 				..
 			} => {
-				writeln!(f, "{}", question_text)?;
+				writeln!(f, "{question_text}")?;
 				writeln!(f)?;
-				writeln!(f, "Language: {}", language)?;
+				writeln!(f, "Language: {language}")?;
 				if !current_code.is_empty() {
 					writeln!(f, "Template code provided")?;
 				}

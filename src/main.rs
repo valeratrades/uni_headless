@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
 	// Session ID is just the current time HH:MM:SS
 	let session_id = Local::now().format("%H:%M:%S").to_string();
 
-	log!("Starting Moodle login automation... [session: {}]", session_id);
+	log!("Starting Moodle login automation... [session: {session_id}]");
 	log!("Visible mode: {}", config.visible);
 
 	// Create session-specific HTML directory and cleanup old sessions
@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
 		if url.starts_with("http://") || url.starts_with("https://") {
 			url
 		} else {
-			format!("https://{}", url)
+			format!("https://{url}")
 		}
 	};
 	let mut urls: Vec<String> = vec![normalize_url(args.target_url.clone())];
@@ -227,14 +227,14 @@ async fn process_url(
 ) -> Result<(bool, chromiumoxide::Page)> {
 	// Create/navigate to page
 	let page = if debug_from_html {
-		let file_url = format!("file://{}", target_url);
-		log!("Debug mode: opening local file {}", file_url);
+		let file_url = format!("file://{target_url}");
+		log!("Debug mode: opening local file {file_url}");
 		let page = browser.new_page(&file_url).await.map_err(|e| eyre!("Failed to open file: {}", e))?;
 		tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 		page
 	} else if manual_login {
 		log!("Manual login mode: waiting for you to navigate to target URL...");
-		log!("Target: {}", target_url);
+		log!("Target: {target_url}");
 
 		let page = browser.new_page(target_url).await.map_err(|e| eyre!("Failed to create new page: {}", e))?;
 

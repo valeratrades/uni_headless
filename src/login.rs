@@ -113,7 +113,7 @@ async fn login_caseine(page: &Page, target_url: &str, config: &AppConfig) -> Res
 	}
 
 	let final_url = page.url().await.ok().flatten().unwrap_or_default();
-	log!("Login complete, now at: {}", final_url);
+	log!("Login complete, now at: {final_url}");
 
 	// Check we ended up at the target (compare base path, ignoring query params)
 	let target_base = target_url.split('?').next().unwrap_or(target_url);

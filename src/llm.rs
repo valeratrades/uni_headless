@@ -164,7 +164,7 @@ async fn fetch_image_as_base64(page: &Page, url: &str) -> Result<(String, String
 		r#"
 		(async function() {{
 			try {{
-				const response = await fetch("{}");
+				const response = await fetch("{url}");
 				if (!response.ok) return null;
 				const blob = await response.blob();
 				const mediaType = blob.type || 'image/png';
@@ -180,8 +180,7 @@ async fn fetch_image_as_base64(page: &Page, url: &str) -> Result<(String, String
 				return null;
 			}}
 		}})()
-		"#,
-		url
+		"#
 	);
 
 	let result = page.evaluate(fetch_script).await.map_err(|e| eyre!("Failed to fetch image: {}", e))?;
@@ -219,7 +218,7 @@ Respond with JSON only, no markdown, in this exact format:
 					client = client.append_file(base64, media_type);
 				}
 				Err(e) => {
-					tracing::warn!("Failed to fetch image for LLM: {}", e);
+					tracing::warn!("Failed to fetch image for LLM: {e}");
 				}
 			}
 		}
@@ -257,7 +256,7 @@ Respond with JSON only, no markdown, in this exact format:
 					client = client.append_file(base64, media_type);
 				}
 				Err(e) => {
-					tracing::warn!("Failed to fetch image for LLM: {}", e);
+					tracing::warn!("Failed to fetch image for LLM: {e}");
 				}
 			}
 		}
@@ -325,7 +324,7 @@ For dropdown blanks, provide the exact text of the option to select (one of the 
 					client = client.append_file(base64, media_type);
 				}
 				Err(e) => {
-					tracing::warn!("Failed to fetch image for LLM: {}", e);
+					tracing::warn!("Failed to fetch image for LLM: {e}");
 				}
 			}
 		}
@@ -400,7 +399,7 @@ Write correct, working code. Do not include docstrings or comments."#
 					client = client.append_file(base64, media_type);
 				}
 				Err(e) => {
-					tracing::warn!("Failed to fetch image for LLM: {}", e);
+					tracing::warn!("Failed to fetch image for LLM: {e}");
 				}
 			}
 		}
@@ -441,7 +440,7 @@ IMPORTANT: Each drop zone can only accept choices from its group. Match the grou
 					client = client.append_file(base64, media_type);
 				}
 				Err(e) => {
-					tracing::warn!("Failed to fetch image for LLM: {}", e);
+					tracing::warn!("Failed to fetch image for LLM: {e}");
 				}
 			}
 		}
@@ -510,7 +509,7 @@ Respond with JSON only, no markdown, in this exact format:
 				client = client.append_file(base64, media_type);
 			}
 			Err(e) => {
-				tracing::warn!("Failed to fetch image for LLM: {}", e);
+				tracing::warn!("Failed to fetch image for LLM: {e}");
 			}
 		}
 	}
@@ -523,7 +522,7 @@ Respond with JSON only, no markdown, in this exact format:
 					client = client.append_file(base64, media_type);
 				}
 				Err(e) => {
-					tracing::warn!("Failed to fetch choice image for LLM: {}", e);
+					tracing::warn!("Failed to fetch choice image for LLM: {e}");
 				}
 			}
 		}
