@@ -1,10 +1,11 @@
 {
+  #TODO: update to latest proper way to use v-utils flakes v1.4
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url = "github:numtide/flake-utils";
     pre-commit-hooks.url = "github:cachix/git-hooks.nix";
-    v-utils.url = "github:valeratrades/.github";
+    v-utils.url = "github:valeratrades/.github?ref=v1.4";
   };
   outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, v-utils }:
     flake-utils.lib.eachDefaultSystem (
@@ -15,7 +16,6 @@
           inherit system overlays;
           allowUnfree = true;
         };
-        #NB: can't load rust-bin from nightly.latest, as there are week guarantees of which components will be available on each day.
         rust = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
           extensions = [ "rust-src" "rust-analyzer" "rust-docs" "rustc-codegen-cranelift-preview" ];
         });
@@ -24,17 +24,23 @@
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
 
-        workflowContents = v-utils.ci {
-          inherit pkgs;
+        github = v-utils.github {
+          inherit pkgs pname;
           lastSupportedVersion = "nightly-2025-11-07";
-          jobsErrors = [ "rust-tests" ];
-          jobsWarnings = [ "rust-doc" "rust-clippy" "rust-machete" "rust-sorted" "rust-sorted-derives" "tokei" ];
+          jobs.default = true;
+          langs = [ "rs" ];
+          releaseLatest = {
+            targets = [ "x86_64-unknown-linux-gnu" "x86_64-pc-windows-msvc" ];
+            cargoFlags = { "x86_64-pc-windows-msvc" = "--no-default-features"; };
+            aptDeps = [ "libssl-dev" "pkg-config" ];
+          };
         };
+        rs = v-utils.rs { inherit pkgs rust; };
         readme = v-utils.readme-fw {
           inherit pkgs pname;
           lastSupportedVersion = "nightly-1.93";
           rootDir = ./.;
-          licenses = [{ name = "Blue Oak 1.0.0"; outPath = "LICENSE"; }];
+          defaults = true;
           badges = [ "msrv" "crates_io" "docs_rs" "loc" "ci" ];
         };
       in
@@ -48,7 +54,7 @@
             };
           in
           {
-            default = rustPlatform.buildRustPackage rec {
+            default = rustPlatform.buildRustPackage {
               inherit pname;
               version = manifest.version;
 
@@ -67,38 +73,23 @@
           mkShell {
             inherit stdenv;
             shellHook =
-              pre-commit-check.shellHook
-              + ''
-                mkdir -p ./.github/workflows
-                rm -f ./.github/workflows/errors.yml; cp ${workflowContents.errors} ./.github/workflows/errors.yml
-                rm -f ./.github/workflows/warnings.yml; cp ${workflowContents.warnings} ./.github/workflows/warnings.yml
-
-                cp -f ${v-utils.files.licenses.blue_oak} ./LICENSE
-
-                cargo -Zscript -q ${v-utils.hooks.appendCustom} ./.git/hooks/pre-commit
-                cp -f ${(v-utils.hooks.preCommit) { inherit pkgs pname; }} ./.git/hooks/custom.sh
-                cp -f ${(v-utils.hooks.treefmt) { inherit pkgs; }} ./.treefmt.toml
-
-                mkdir -p ./.cargo
-                cp -f ${ (v-utils.files.gitignore { inherit pkgs; langs = [ "rs" ]; }) } ./.gitignore
-                cp -f ${(v-utils.files.rust.clippy { inherit pkgs; })} ./.cargo/.clippy.toml
-                cp -f ${(v-utils.files.rust.config { inherit pkgs; })} ./.cargo/config.toml
-                cp -f ${(v-utils.files.rust.rustfmt { inherit pkgs; })} ./.rustfmt.toml
-
-                cp -f ${readme} ./README.md
-
-                alias qr="./target/debug/${pname}"
+              pre-commit-check.shellHook +
+              github.shellHook +
+              rs.shellHook +
+              readme.shellHook +
+              ''
+                cp -f ${(v-utils.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
               '';
 
             packages = [
-              mold-wrapped
+              mold
               openssl
               pkg-config
               rust
-            ] ++ pre-commit-check.enabledPackages;
+            ] ++ pre-commit-check.enabledPackages ++ github.enabledPackages ++ rs.enabledPackages;
 
-						env.RUST_BACKTRACE = 1;
-						env.RUST_LIB_BACKTRACE = 0;
+            env.RUST_BACKTRACE = 1;
+            env.RUST_LIB_BACKTRACE = 0;
           };
       }
     );

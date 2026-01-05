@@ -1,7 +1,7 @@
 cargo-features = ["codegen-backend"]
 [package]
 name = "uni_headless"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [package.metadata.docs.rs]
