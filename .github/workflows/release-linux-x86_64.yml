@@ -1,0 +1,49 @@
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_NET_RETRY: '10'
+  RUSTUP_MAX_RETRIES: '10'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        targets: x86_64-unknown-linux-gnu
+    - name: Install mold
+      uses: rui314/setup-mold@v1
+    - name: Install dependencies
+      run: 'sudo apt-get update
+
+        sudo apt-get install -y libssl-dev pkg-config mold
+
+        '
+    - name: Remove .cargo/config.toml
+      run: rm -f .cargo/config.toml .cargo/config
+    - name: Build release binary
+      run: cargo build --release --target x86_64-unknown-linux-gnu
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ github.event.repository.name }}-linux-x86_64
+        path: target/x86_64-unknown-linux-gnu/release/${{ github.event.repository.name
+          }}
+    - env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: target/x86_64-unknown-linux-gnu/release/${{ github.event.repository.name
+          }}
+        make_latest: false
+        name: Latest linux-x86_64
+        prerelease: true
+        tag_name: latest-linux-x86_64
+name: Release linux-x86_64
+'on':
+  push:
+    branches:
+    - release
+  workflow_dispatch: {}
+permissions:
+  contents: write
