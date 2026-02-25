@@ -1,5 +1,8 @@
 use chromiumoxide::Page;
-use color_eyre::{Result, eyre::eyre};
+use color_eyre::{
+	Result,
+	eyre::{bail, eyre},
+};
 use v_utils::log;
 
 use crate::config::AppConfig;
@@ -62,7 +65,7 @@ async fn login_caseine(page: &Page, target_url: &str, config: &AppConfig) -> Res
 		"#,
 		)
 		.await
-		.map_err(|e| eyre!("Failed to click Continue: {}", e))?;
+		.map_err(|e| eyre!("Failed to click Continue: {e}"))?;
 		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 	}
 
@@ -72,7 +75,7 @@ async fn login_caseine(page: &Page, target_url: &str, config: &AppConfig) -> Res
 		log!("On login page, clicking login button...");
 		page.evaluate(r#"document.querySelector('a.btn:nth-child(3)').click()"#)
 			.await
-			.map_err(|e| eyre!("Failed to click login button: {}", e))?;
+			.map_err(|e| eyre!("Failed to click login button: {e}"))?;
 		tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 	}
 
@@ -80,7 +83,7 @@ async fn login_caseine(page: &Page, target_url: &str, config: &AppConfig) -> Res
 	let current_url = page.url().await.ok().flatten().unwrap_or_default();
 	if current_url.contains("discovery.renater.fr") || current_url.contains("wayf") {
 		log!("Selecting university from dropdown...");
-		page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for federation page: {}", e))?;
+		page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for federation page: {e}"))?;
 		tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 		select_university_from_dropdown(page).await?;
 	}
@@ -113,13 +116,13 @@ async fn login_caseine(page: &Page, target_url: &str, config: &AppConfig) -> Res
 	}
 
 	let final_url = page.url().await.ok().flatten().unwrap_or_default();
-	log!("Login complete, now at: {}", final_url);
+	log!("Login complete, now at: {final_url}");
 
 	// Check we ended up at the target (compare base path, ignoring query params)
 	let target_base = target_url.split('?').next().unwrap_or(target_url);
 	let final_base = final_url.split('?').next().unwrap_or(&final_url);
 	if final_base != target_base {
-		return Err(eyre!("Login failed: expected to be at {}, but at {}", target_url, final_url));
+		bail!("Login failed: expected to be at {target_url}, but at {final_url}");
 	}
 
 	Ok(())
@@ -153,7 +156,7 @@ async fn login_uca_moodle(page: &Page, target_url: &str, config: &AppConfig) -> 
 	if final_base == target_base {
 		log!("Login successful, at target page");
 	} else {
-		return Err(eyre!("Login failed: expected to be at {}, but at {}", target_url, final_url));
+		bail!("Login failed: expected to be at {target_url}, but at {final_url}");
 	}
 
 	Ok(())
@@ -171,7 +174,7 @@ async fn select_university_from_dropdown(page: &Page) -> Result<()> {
 			return 'jquery not found';
 		})()
 	"#;
-	page.evaluate(open_script).await.map_err(|e| eyre!("Failed to open dropdown: {}", e))?;
+	page.evaluate(open_script).await.map_err(|e| eyre!("Failed to open dropdown: {e}"))?;
 	tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
 	// Type in the search field
@@ -187,13 +190,13 @@ async fn select_university_from_dropdown(page: &Page) -> Result<()> {
 			return 'search field not found';
 		})()
 	"#;
-	page.evaluate(type_script).await.map_err(|e| eyre!("Failed to type: {}", e))?;
+	page.evaluate(type_script).await.map_err(|e| eyre!("Failed to type: {e}"))?;
 	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
 	// Press Enter to select the option
 	page.evaluate(r#"document.querySelector('input.select2-search__field').dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', keyCode: 13, bubbles: true}))"#)
 		.await
-		.map_err(|e| eyre!("Failed to press Enter: {}", e))?;
+		.map_err(|e| eyre!("Failed to press Enter: {e}"))?;
 	tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
 	// Click the "Select" button
@@ -219,7 +222,7 @@ async fn select_university_from_dropdown(page: &Page) -> Result<()> {
 	"#,
 		)
 		.await
-		.map_err(|e| eyre!("Failed to click Select button: {}", e))?;
+		.map_err(|e| eyre!("Failed to click Select button: {e}"))?;
 	log!("Select button result: {:?}", btn_result.value());
 	tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
@@ -243,7 +246,7 @@ async fn fill_and_submit_login_form(page: &Page, config: &AppConfig) -> Result<(
 		"#,
 		config.username, config.password
 	);
-	page.evaluate(fill_script).await.map_err(|e| eyre!("Failed to fill login form: {}", e))?;
+	page.evaluate(fill_script).await.map_err(|e| eyre!("Failed to fill login form: {e}"))?;
 
 	// Submit
 	let submit_script = r#"
@@ -261,7 +264,7 @@ async fn fill_and_submit_login_form(page: &Page, config: &AppConfig) -> Result<(
 			return false;
 		})()
 	"#;
-	page.evaluate(submit_script).await.map_err(|e| eyre!("Failed to submit login form: {}", e))?;
+	page.evaluate(submit_script).await.map_err(|e| eyre!("Failed to submit login form: {e}"))?;
 
 	Ok(())
 }

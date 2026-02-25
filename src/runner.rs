@@ -18,16 +18,13 @@ use crate::{
 	llm::{FillInBlanksAnswerItem, LlmAnswerResult, ask_llm_for_answer, ask_llm_for_code, retry_llm_with_test_results},
 };
 
-/// Run the stop hook with a message if configured
-fn run_stop_hook(config: &AppConfig, message: &str) {
-	if let Some(ref hook) = config.stop_hook {
-		log!("Running stop hook: {} {:?}", hook, message);
-		// Escape single quotes for shell: replace ' with '\''
-		let escaped = message.replace('\'', "'\\''");
-		let _ = tokio::process::Command::new("sh").arg("-c").arg(format!("{} '{}'", hook, escaped)).spawn();
+/// Shared JS helper to check if text matches confirmation keywords
+const CONFIRMATION_MATCH_JS: &str = r#"
+	function isConfirmationText(text) {
+		const t = text.toLowerCase();
+		return t.includes('envoyer') || t.includes('terminer') || t.includes('submit') || t.includes('finir') || t.includes('confirm') || t.includes('valider');
 	}
-}
-
+"#;
 /// Handle a VPL (Virtual Programming Lab) code submission page
 /// Returns true if got perfect grade (100%)
 pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig, session_id: &str) -> Result<bool> {
@@ -40,12 +37,12 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 
 	// Display the question
 	let header = "--- Code Submission [VPL] ---";
-	tracing::info!("{}", header);
-	eprintln!("{}", header);
+	tracing::info!("{header}");
+	eprintln!("{header}");
 
 	let text = question.question_text();
-	tracing::info!("{}", text);
-	eprintln!("{}", text);
+	tracing::info!("{text}");
+	eprintln!("{text}");
 
 	// Display images
 	for img in question.images() {
@@ -80,8 +77,8 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 		Ok(result) => {
 			eprintln!("\nGenerated code:");
 			for (filename, content) in &result.files {
-				eprintln!("\n=== {} ===", filename);
-				eprintln!("{}", content);
+				eprintln!("\n=== {filename} ===");
+				eprintln!("{content}");
 			}
 			eprintln!();
 			result
@@ -122,7 +119,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 	let max_retries = config.max_consecutive_failures;
 	for attempt in 0..=max_retries {
 		if attempt > 0 {
-			log!("Retry attempt {}/{}", attempt, max_retries);
+			log!("Retry attempt {attempt}/{max_retries}");
 		}
 
 		// Save the editor page HTML
@@ -181,7 +178,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 				let test_results = parse_vpl_test_results(page).await?;
 				if let Some(test_results) = test_results {
 					eprintln!("\n=== Test Failure Details ===");
-					eprintln!("{}", test_results);
+					eprintln!("{test_results}");
 
 					// Ask LLM to fix the code with test results
 					log!("Asking LLM to fix the code based on test results...");
@@ -208,7 +205,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 						}
 						Err(e) => {
 							elog!("Failed to regenerate code: {}", e);
-							run_stop_hook(config, &format!("VPL: Failed to regenerate code: {}", e));
+							run_stop_hook(config, &format!("VPL: Failed to regenerate code: {e}"));
 							bail!("Evaluation failed: got {} (expected 100%)", grade * Percent(1.0));
 						}
 					}
@@ -231,7 +228,6 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 	run_stop_hook(config, "VPL: Exhausted all retry attempts");
 	bail!("Exhausted all retry attempts");
 }
-
 /// Handle a quiz (multi-choice) page
 /// Returns Ok(true) if at least one answer was submitted, Ok(false) if questions existed but none were answered
 pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig, session_id: &str) -> Result<bool> {
@@ -327,12 +323,12 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 				"[single]"
 			};
 			let header = format!("--- Question {} {} ---", question_num + i + 1, type_marker);
-			tracing::info!("{}", header);
-			eprintln!("{}", header);
+			tracing::info!("{header}");
+			eprintln!("{header}");
 
 			let question_str = question.to_string();
-			tracing::info!("{}", question_str);
-			eprint!("{}", question_str);
+			tracing::info!("{question_str}");
+			eprint!("{question_str}");
 
 			// Display question images
 			for img in question.images() {
@@ -399,7 +395,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 							}
 						}
 						LlmAnswerResult::Text { answer } => {
-							answer_logs.push(format!("  Answer: {}", answer));
+							answer_logs.push(format!("  Answer: {answer}"));
 						}
 						LlmAnswerResult::Matching { selections } => {
 							answer_logs.push("  Matches:".to_string());
@@ -409,7 +405,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 								for item in question.match_items() {
 									if &item.select_name == select_name {
 										let answer_text = item.options.iter().find(|o| &o.value == value).map(|o| o.text.as_str()).unwrap_or("?");
-										answer_logs.push(format!("    {} -> {}", item.prompt, answer_text));
+										answer_logs.push(format!("    {} -> {answer_text}", item.prompt));
 										break;
 									}
 								}
@@ -461,7 +457,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 									// Find the choice text and zone number
 									let choice_text = ddwtos.choices.iter().find(|c| c.choice_number == *choice_num).map(|c| c.text.as_str()).unwrap_or("?");
 									let place_num = ddwtos.drop_zones.iter().find(|z| &z.input_name == input_name).map(|z| z.place_number).unwrap_or(0);
-									answer_logs.push(format!("    Place {} -> {}", place_num, choice_text));
+									answer_logs.push(format!("    Place {place_num} -> {choice_text}"));
 								}
 							}
 						}
@@ -493,7 +489,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 				output.push('\n');
 			}
 			output.push('\n');
-			print!("{}", output);
+			print!("{output}");
 		}
 
 		if answers_to_select.is_empty() {
@@ -609,6 +605,211 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 	// Return success if we submitted at least one answer, or if there were no questions to answer
 	Ok(total_answers_submitted > 0 || total_questions_found == 0)
 }
+/// Parse a VPL page to extract the code submission question
+pub async fn parse_vpl_page(page: &Page) -> Result<Option<Question>> {
+	let parse_script = r#"
+		(function() {
+			function extractImages(element) {
+				if (!element) return [];
+				const images = [];
+				const imgElements = element.querySelectorAll('img');
+				for (const img of imgElements) {
+					const url = img.src || '';
+					if (url) images.push({ url: url, alt: img.alt || null });
+				}
+				return images;
+			}
+
+			const urlParams = new URLSearchParams(window.location.search);
+			const moduleId = urlParams.get('id') || '';
+
+			let description = '';
+			let images = [];
+			const requiredFiles = [];
+
+			const walkAndExtract = (node) => {
+				let desc = '';
+				if (node.nodeType === Node.TEXT_NODE) {
+					desc += node.textContent;
+				} else if (node.nodeType === Node.ELEMENT_NODE) {
+					const tag = node.tagName.toLowerCase();
+					if (tag === 'p') { desc += '\n\n'; for (const child of node.childNodes) desc += walkAndExtract(child); }
+					else if (tag === 'br') { desc += '\n'; }
+					else if (tag === 'li') { desc += '\n• '; for (const child of node.childNodes) desc += walkAndExtract(child); }
+					else if (tag === 'ol' || tag === 'ul') { for (const child of node.childNodes) desc += walkAndExtract(child); }
+					else if (tag === 'code') { desc += '`' + node.textContent + '`'; }
+					else if (tag === 'span') {
+						const style = node.getAttribute('style') || '';
+						if (style.includes('courier') || style.includes('monospace')) desc += '`' + node.textContent + '`';
+						else for (const child of node.childNodes) desc += walkAndExtract(child);
+					}
+					else if (tag === 'em' || tag === 'i') { desc += '_'; for (const child of node.childNodes) desc += walkAndExtract(child); desc += '_'; }
+					else if (tag === 'strong' || tag === 'b') { desc += '**'; for (const child of node.childNodes) desc += walkAndExtract(child); desc += '**'; }
+					else if (tag === 'div' && node.classList.contains('editor-indent')) { desc += '\n'; for (const child of node.childNodes) desc += walkAndExtract(child); }
+					else { for (const child of node.childNodes) desc += walkAndExtract(child); }
+				}
+				return desc;
+			};
+
+			const generalBoxes = document.querySelectorAll('.generalbox');
+			for (const box of generalBoxes) {
+				const noOverflow = box.querySelector('.no-overflow');
+				if (!noOverflow) continue;
+				if (noOverflow.textContent.includes('Work state summary')) continue;
+				const text = noOverflow.textContent.trim();
+				if (text.length < 50) continue;
+				if (text.includes('Responsable de la matière')) continue;
+
+				const clone = noOverflow.cloneNode(true);
+				const toRemove = clone.querySelectorAll('script, style, .ace_editor, pre[id^="codefile"]');
+				for (const el of toRemove) el.remove();
+
+				let desc = '';
+				for (const child of clone.childNodes) desc += walkAndExtract(child);
+				desc = desc.trim().replace(/\n{3,}/g, '\n\n');
+
+				if (desc.length > 50) { description = desc; images = extractImages(noOverflow); break; }
+			}
+
+			if (!description) {
+				const noOverflowDivs = document.querySelectorAll('.no-overflow');
+				for (const div of noOverflowDivs) {
+					if (div.textContent.includes('Work state summary')) continue;
+					const text = div.textContent.trim();
+					if (text.length < 100) continue;
+					if (text.includes('Responsable de la matière')) continue;
+
+					const clone = div.cloneNode(true);
+					const toRemove = clone.querySelectorAll('script, style, .ace_editor, pre[id^="codefile"]');
+					for (const el of toRemove) el.remove();
+
+					let desc = '';
+					for (const child of clone.childNodes) desc += walkAndExtract(child);
+					desc = desc.trim().replace(/\n{3,}/g, '\n\n');
+
+					if (desc.length > 50) { description = desc; images = extractImages(div); break; }
+				}
+			}
+
+			const h4Elements = document.querySelectorAll('h4[id^="fileid"]');
+			for (const h4 of h4Elements) {
+				const fileName = h4.textContent.trim();
+				if (!fileName) continue;
+
+				const preId = 'code' + h4.id;
+				const preElement = document.getElementById(preId);
+
+				let fileContent = '';
+				if (preElement) {
+					const aceLines = preElement.querySelectorAll('.ace_line');
+					if (aceLines.length > 0) {
+						const lines = [];
+						for (const line of aceLines) lines.push(line.textContent);
+						fileContent = lines.join('\n');
+					}
+				}
+
+				requiredFiles.push({ name: fileName, content: fileContent.trim() });
+			}
+
+			if (requiredFiles.length === 0) {
+				const allPres = document.querySelectorAll('pre.ace_editor');
+				for (const pre of allPres) {
+					const aceLines = pre.querySelectorAll('.ace_line');
+					if (aceLines.length > 0) {
+						const lines = [];
+						for (const line of aceLines) lines.push(line.textContent);
+						const content = lines.join('\n');
+						if (content.includes('# Ecrivez') || content.includes('if __name__')) {
+							requiredFiles.push({ name: 'student.py', content: content.trim() });
+							break;
+						}
+					}
+				}
+			}
+
+			if (!description && requiredFiles.length === 0) return null;
+
+			return JSON.stringify({ type: 'CodeSubmission', description: description, required_files: requiredFiles, module_id: moduleId, images: images });
+		})()
+	"#;
+
+	let result = page.evaluate(parse_script).await.map_err(|e| eyre!("Failed to parse VPL page: {e}"))?;
+
+	let json_str = match result.value().and_then(|v| v.as_str()) {
+		Some(s) => s,
+		None => return Ok(None),
+	};
+
+	let parsed: serde_json::Value = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse VPL JSON: {e}"))?;
+
+	let description = parsed["description"].as_str().unwrap_or("").to_string();
+	let module_id = parsed["module_id"].as_str().unwrap_or("").to_string();
+
+	let images: Vec<Image> = parsed["images"]
+		.as_array()
+		.map(|arr| {
+			arr.iter()
+				.map(|img| Image {
+					url: img["url"].as_str().unwrap_or("").to_string(),
+					alt: img["alt"].as_str().map(|s| s.to_string()),
+				})
+				.collect()
+		})
+		.unwrap_or_default();
+
+	let required_files: Vec<RequiredFile> = parsed["required_files"]
+		.as_array()
+		.map(|arr| {
+			arr.iter()
+				.map(|f| RequiredFile {
+					name: f["name"].as_str().unwrap_or("").to_string(),
+					content: f["content"].as_str().unwrap_or("").to_string(),
+				})
+				.collect()
+		})
+		.unwrap_or_default();
+
+	Ok(Some(Question::CodeSubmission {
+		description,
+		required_files,
+		module_id,
+		images,
+	}))
+}
+/// Save the current page's HTML to disk for debugging
+/// Uses the page URL as the filename label
+#[cfg(feature = "xdg")]
+pub async fn save_page_html(page: &Page, session_id: &str) -> Result<PathBuf> {
+	let html_dir = xdg_state_dir!("persist_htmls").join(session_id);
+	std::fs::create_dir_all(&html_dir).map_err(|e| eyre!("Failed to create HTML dir: {e}"))?;
+
+	let url = page.url().await.ok().flatten().unwrap_or_default();
+	let label = url.replace("https://", "").replace("http://", "");
+
+	let html = page.evaluate("document.documentElement.outerHTML").await.map_err(|e| eyre!("Failed to get page HTML: {e}"))?;
+	let html_str = html.value().and_then(|v| v.as_str()).unwrap_or("<html></html>");
+
+	let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+	let safe_label: String = label.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+
+	let filename = format!("{timestamp}_{safe_label}.html");
+	let filepath = html_dir.join(&filename);
+
+	std::fs::write(&filepath, html_str).map_err(|e| eyre!("Failed to write HTML file: {e}"))?;
+
+	log!("Saved page HTML to: {}", filepath.display());
+	Ok(filepath)
+}
+/// Run the stop hook with a message if configured
+fn run_stop_hook(config: &AppConfig, message: &str) {
+	if let Some(ref hook) = config.stop_hook {
+		log!("Running stop hook: {hook} {message:?}");
+		// Escape single quotes for shell: replace ' with '\''
+		let escaped = message.replace('\'', "'\\''");
+		let _ = tokio::process::Command::new("sh").arg("-c").arg(format!("{hook} '{escaped}'")).spawn();
+	}
+}
 
 /// Click the Edit button on a VPL page to open the editor
 async fn click_vpl_edit_button(page: &Page) -> Result<bool> {
@@ -632,7 +833,7 @@ async fn click_vpl_edit_button(page: &Page) -> Result<bool> {
 		})()
 	"#;
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click Edit button: {}", e))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click Edit button: {e}"))?;
 	Ok(result.value().and_then(|v| v.as_bool()).unwrap_or(false))
 }
 
@@ -641,21 +842,21 @@ async fn click_vpl_edit_button(page: &Page) -> Result<bool> {
 /// Returns Ok(true) if clicked, Ok(false) if button not found, Err if click failed
 async fn click_vpl_button(page: &Page, action: &str) -> Result<bool> {
 	// First, try to find by exact ID
-	let button_id = format!("vpl_ide_{}", action);
-	let selector = format!("#{}", button_id);
+	let button_id = format!("vpl_ide_{action}");
+	let selector = format!("#{button_id}");
 
 	// Try to find and click the element using CDP
 	let el = page.find_element(&selector).await;
 	if let Ok(element) = el {
-		element.click().await.map_err(|e| eyre!("Failed to click element: {}", e))?;
+		element.click().await.map_err(|e| eyre!("Failed to click element: {e}"))?;
 		return Ok(true);
 	}
 
 	// Fallback: search by title attribute containing the action
-	let fallback_selector = format!(r#"[id^="vpl_ide_"][title*="{}" i]"#, action);
+	let fallback_selector = format!(r#"[id^="vpl_ide_"][title*="{action}" i]"#);
 	let el = page.find_element(&fallback_selector).await;
 	if let Ok(element) = el {
-		element.click().await.map_err(|e| eyre!("Failed to click element: {}", e))?;
+		element.click().await.map_err(|e| eyre!("Failed to click element: {e}"))?;
 		return Ok(true);
 	}
 
@@ -695,8 +896,8 @@ async fn set_vpl_file_content(page: &Page, filename: &str, content: &str) -> Res
 	let script = format!(
 		r#"
 		(function() {{
-			const filename = "{}";
-			const content = `{}`;
+			const filename = "{filename}";
+			const content = `{escaped_content}`;
 
 			// VPL uses ACE editor - find and set content
 			if (typeof ace !== 'undefined') {{
@@ -737,14 +938,13 @@ async fn set_vpl_file_content(page: &Page, filename: &str, content: &str) -> Res
 
 			return false;
 		}})()
-		"#,
-		filename, escaped_content
+		"#
 	);
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set file content: {}", e))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set file content: {e}"))?;
 
 	if result.value().and_then(|v| v.as_bool()) != Some(true) {
-		return Err(eyre!("Could not find editor to set content"));
+		bail!("Could not find editor to set content");
 	}
 
 	Ok(())
@@ -789,7 +989,7 @@ async fn parse_vpl_evaluation_result(page: &Page) -> Result<Option<String>> {
 		})()
 	"#;
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to parse evaluation result: {}", e))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to parse evaluation result: {e}"))?;
 
 	Ok(result.value().and_then(|v| v.as_str()).map(|s| s.to_string()))
 }
@@ -847,7 +1047,7 @@ async fn parse_vpl_test_results(page: &Page) -> Result<Option<String>> {
 		})()
 	"#;
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to parse test results: {}", e))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to parse test results: {e}"))?;
 
 	Ok(result.value().and_then(|v| v.as_str()).map(|s| s.to_string()))
 }
@@ -873,13 +1073,13 @@ async fn parse_vpl_proposed_grade(page: &Page) -> Result<Option<Percent>> {
 		})()
 	"#;
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to parse proposed grade: {}", e))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to parse proposed grade: {e}"))?;
 
 	let Some(text) = result.value().and_then(|v| v.as_str()) else {
 		return Ok(None);
 	};
 
-	let re = regex::Regex::new(r"Proposed grade:\s*([\d.]+)\s*/\s*([\d.]+)").map_err(|e| eyre!("Regex error: {}", e))?;
+	let re = regex::Regex::new(r"Proposed grade:\s*([\d.]+)\s*/\s*([\d.]+)").map_err(|e| eyre!("Regex error: {e}"))?;
 	let Some(caps) = re.captures(text) else {
 		return Ok(None);
 	};
@@ -890,14 +1090,6 @@ async fn parse_vpl_proposed_grade(page: &Page) -> Result<Option<Percent>> {
 	let percent = if total > 0.0 { score / total } else { 0.0 };
 	Ok(Some(Percent(percent)))
 }
-
-/// Shared JS helper to check if text matches confirmation keywords
-const CONFIRMATION_MATCH_JS: &str = r#"
-	function isConfirmationText(text) {
-		const t = text.toLowerCase();
-		return t.includes('envoyer') || t.includes('terminer') || t.includes('submit') || t.includes('finir') || t.includes('confirm') || t.includes('valider');
-	}
-"#;
 
 /// Find confirmation buttons on the page and optionally click them
 /// Returns a list of button names found
@@ -952,9 +1144,9 @@ async fn find_confirmation_buttons(page: &Page, click: bool) -> Result<Vec<Strin
 	"#
 	);
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to find confirmation buttons: {}", e))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to find confirmation buttons: {e}"))?;
 	let json_str = result.value().and_then(|v| v.as_str()).unwrap_or("[]");
-	let names: Vec<String> = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse JSON: {}", e))?;
+	let names: Vec<String> = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse JSON: {e}"))?;
 
 	if click && !names.is_empty() {
 		log!("Clicked {} confirmation button(s)", names.len());
@@ -995,7 +1187,7 @@ async fn click_modal_confirmation(page: &Page) -> Result<bool> {
 	"#
 	);
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click modal confirmation: {}", e))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click modal confirmation: {e}"))?;
 	let clicked = result.value().and_then(|v| v.as_bool()) == Some(true);
 	if clicked {
 		log!("Clicked modal confirmation button");
@@ -1407,9 +1599,9 @@ async fn parse_questions(page: &Page) -> Result<Vec<Question>> {
 		})()
 	"#;
 
-	let result = page.evaluate(parse_script).await.map_err(|e| eyre!("Failed to parse questions: {}", e))?;
+	let result = page.evaluate(parse_script).await.map_err(|e| eyre!("Failed to parse questions: {e}"))?;
 	let json_str = result.value().and_then(|v| v.as_str()).unwrap_or("[]");
-	let parsed: Vec<serde_json::Value> = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse JSON: {}", e))?;
+	let parsed: Vec<serde_json::Value> = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse JSON: {e}"))?;
 
 	let mut questions = Vec::new();
 
@@ -1617,18 +1809,17 @@ async fn toggle_answer(page: &Page, input_name: &str, input_value: &str) -> Resu
 	let script = format!(
 		r#"
 		(function() {{
-			const input = document.querySelector('input[name="{}"][value="{}"]');
+			const input = document.querySelector('input[name="{input_name}"][value="{input_value}"]');
 			if (input) {{ input.click(); return true; }}
 			return false;
 		}})()
-		"#,
-		input_name, input_value
+		"#
 	);
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to select answer: {}", e))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to select answer: {e}"))?;
 
 	if result.value().and_then(|v| v.as_bool()) != Some(true) {
-		return Err(eyre!("Failed to find input element"));
+		bail!("Failed to find input element");
 	}
 
 	Ok(())
@@ -1642,23 +1833,22 @@ async fn set_text_answer(page: &Page, input_name: &str, answer: &str) -> Result<
 	let script = format!(
 		r#"
 		(function() {{
-			const input = document.querySelector('input[name="{}"]');
+			const input = document.querySelector('input[name="{input_name}"]');
 			if (input) {{
-				input.value = "{}";
+				input.value = "{escaped_answer}";
 				input.dispatchEvent(new Event('input', {{ bubbles: true }}));
 				input.dispatchEvent(new Event('change', {{ bubbles: true }}));
 				return true;
 			}}
 			return false;
 		}})()
-		"#,
-		input_name, escaped_answer
+		"#
 	);
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set text answer: {}", e))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set text answer: {e}"))?;
 
 	if result.value().and_then(|v| v.as_bool()) != Some(true) {
-		return Err(eyre!("Failed to find text input element"));
+		bail!("Failed to find text input element");
 	}
 
 	Ok(())
@@ -1669,22 +1859,21 @@ async fn set_select_value(page: &Page, select_name: &str, value: &str) -> Result
 	let script = format!(
 		r#"
 		(function() {{
-			const select = document.querySelector('select[name="{}"]');
+			const select = document.querySelector('select[name="{select_name}"]');
 			if (select) {{
-				select.value = "{}";
+				select.value = "{value}";
 				select.dispatchEvent(new Event('change', {{ bubbles: true }}));
 				return true;
 			}}
 			return false;
 		}})()
-		"#,
-		select_name, value
+		"#
 	);
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set select value: {}", e))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set select value: {e}"))?;
 
 	if result.value().and_then(|v| v.as_bool()) != Some(true) {
-		return Err(eyre!("Failed to find select element: {}", select_name));
+		bail!("Failed to find select element: {select_name}");
 	}
 
 	Ok(())
@@ -1695,23 +1884,22 @@ async fn set_hidden_input_value(page: &Page, input_name: &str, value: &str) -> R
 	let script = format!(
 		r#"
 		(function() {{
-			const input = document.querySelector('input[name="{}"]');
+			const input = document.querySelector('input[name="{input_name}"]');
 			if (input) {{
-				input.value = "{}";
+				input.value = "{value}";
 				input.dispatchEvent(new Event('input', {{ bubbles: true }}));
 				input.dispatchEvent(new Event('change', {{ bubbles: true }}));
 				return true;
 			}}
 			return false;
 		}})()
-		"#,
-		input_name, value
+		"#
 	);
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set hidden input value: {}", e))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set hidden input value: {e}"))?;
 
 	if result.value().and_then(|v| v.as_bool()) != Some(true) {
-		return Err(eyre!("Failed to find hidden input element: {}", input_name));
+		bail!("Failed to find hidden input element: {input_name}");
 	}
 
 	Ok(())
@@ -1731,8 +1919,8 @@ async fn set_code_editor_content(page: &Page, input_name: &str, code: &str) -> R
 	let script = format!(
 		r#"
 		(function() {{
-			const inputName = "{}";
-			const code = `{}`;
+			const inputName = "{input_name}";
+			const code = `{escaped_code}`;
 
 			// Find the textarea with this name
 			const textarea = document.querySelector('textarea[name="' + inputName + '"]');
@@ -1765,14 +1953,13 @@ async fn set_code_editor_content(page: &Page, input_name: &str, code: &str) -> R
 			textarea.dispatchEvent(new Event('change', {{ bubbles: true }}));
 			return true;
 		}})()
-		"#,
-		input_name, escaped_code
+		"#
 	);
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set code editor content: {}", e))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set code editor content: {e}"))?;
 
 	if result.value().and_then(|v| v.as_bool()) != Some(true) {
-		return Err(eyre!("Failed to find code editor element"));
+		bail!("Failed to find code editor element");
 	}
 
 	Ok(())
@@ -1798,10 +1985,10 @@ async fn click_submit(page: &Page) -> Result<()> {
 		})()
 	"#;
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click submit: {}", e))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click submit: {e}"))?;
 
 	if result.value().and_then(|v| v.as_bool()) != Some(true) {
-		return Err(eyre!("Failed to find submit button"));
+		bail!("Failed to find submit button");
 	}
 
 	// Wait for page to process submission
@@ -1837,7 +2024,7 @@ async fn click_next_page(page: &Page) -> Result<bool> {
 		})()
 	"#;
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click next page: {}", e))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to click next page: {e}"))?;
 
 	let clicked = result.value().and_then(|v| v.as_bool()).unwrap_or(false);
 	if clicked {
@@ -1850,12 +2037,12 @@ async fn click_next_page(page: &Page) -> Result<bool> {
 
 /// Wait for the page URL to change (indicating form submission)
 async fn wait_for_page_change(page: &Page) -> Result<()> {
-	let initial_url = page.url().await.map_err(|e| eyre!("Failed to get URL: {}", e))?;
+	let initial_url = page.url().await.map_err(|e| eyre!("Failed to get URL: {e}"))?;
 
 	loop {
 		tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-		let current_url = page.url().await.map_err(|e| eyre!("Failed to get URL: {}", e))?;
+		let current_url = page.url().await.map_err(|e| eyre!("Failed to get URL: {e}"))?;
 
 		if current_url != initial_url {
 			// Wait a bit for page to fully load
@@ -1875,7 +2062,7 @@ async fn display_image_chafa(page: &Page, url: &str, max_cols: u32) -> Result<()
 		r#"
 		(async function() {{
 			try {{
-				const response = await fetch("{}");
+				const response = await fetch("{url}");
 				if (!response.ok) return null;
 				const blob = await response.blob();
 				return new Promise((resolve) => {{
@@ -1885,237 +2072,36 @@ async fn display_image_chafa(page: &Page, url: &str, max_cols: u32) -> Result<()
 				}});
 			}} catch (e) {{ return null; }}
 		}})()
-		"#,
-		url
+		"#
 	);
 
-	let result = page.evaluate(fetch_script).await.map_err(|e| eyre!("Failed to fetch image via browser: {}", e))?;
+	let result = page.evaluate(fetch_script).await.map_err(|e| eyre!("Failed to fetch image via browser: {e}"))?;
 	let data_url = result.value().and_then(|v| v.as_str()).ok_or_else(|| eyre!("Failed to fetch image: browser returned null"))?;
 	let base64_data = data_url.split(",").nth(1).ok_or_else(|| eyre!("Invalid data URL format"))?;
 
 	use base64::Engine;
-	let bytes = base64::engine::general_purpose::STANDARD
-		.decode(base64_data)
-		.map_err(|e| eyre!("Failed to decode base64: {}", e))?;
+	let bytes = base64::engine::general_purpose::STANDARD.decode(base64_data).map_err(|e| eyre!("Failed to decode base64: {e}"))?;
 
 	let temp_path = format!("/tmp/quiz_img_{}.tmp", std::process::id());
-	tokio::fs::write(&temp_path, &bytes).await.map_err(|e| eyre!("Failed to write temp file: {}", e))?;
+	tokio::fs::write(&temp_path, &bytes).await.map_err(|e| eyre!("Failed to write temp file: {e}"))?;
 
 	let output = Command::new("chafa")
 		.arg("--size")
-		.arg(format!("{}x", max_cols))
+		.arg(format!("{max_cols}x"))
 		.arg(&temp_path)
 		.stdout(Stdio::piped())
 		.stderr(Stdio::piped())
 		.output()
 		.await
-		.map_err(|e| eyre!("Failed to run chafa: {}", e))?;
+		.map_err(|e| eyre!("Failed to run chafa: {e}"))?;
 
 	let _ = tokio::fs::remove_file(&temp_path).await;
 
 	if output.status.success() {
 		print!("{}", String::from_utf8_lossy(&output.stdout));
 	} else {
-		return Err(eyre!("chafa failed: {}", String::from_utf8_lossy(&output.stderr)));
+		bail!("chafa failed: {}", String::from_utf8_lossy(&output.stderr));
 	}
 
 	Ok(())
-}
-
-/// Parse a VPL page to extract the code submission question
-pub async fn parse_vpl_page(page: &Page) -> Result<Option<Question>> {
-	let parse_script = r#"
-		(function() {
-			function extractImages(element) {
-				if (!element) return [];
-				const images = [];
-				const imgElements = element.querySelectorAll('img');
-				for (const img of imgElements) {
-					const url = img.src || '';
-					if (url) images.push({ url: url, alt: img.alt || null });
-				}
-				return images;
-			}
-
-			const urlParams = new URLSearchParams(window.location.search);
-			const moduleId = urlParams.get('id') || '';
-
-			let description = '';
-			let images = [];
-			const requiredFiles = [];
-
-			const walkAndExtract = (node) => {
-				let desc = '';
-				if (node.nodeType === Node.TEXT_NODE) {
-					desc += node.textContent;
-				} else if (node.nodeType === Node.ELEMENT_NODE) {
-					const tag = node.tagName.toLowerCase();
-					if (tag === 'p') { desc += '\n\n'; for (const child of node.childNodes) desc += walkAndExtract(child); }
-					else if (tag === 'br') { desc += '\n'; }
-					else if (tag === 'li') { desc += '\n• '; for (const child of node.childNodes) desc += walkAndExtract(child); }
-					else if (tag === 'ol' || tag === 'ul') { for (const child of node.childNodes) desc += walkAndExtract(child); }
-					else if (tag === 'code') { desc += '`' + node.textContent + '`'; }
-					else if (tag === 'span') {
-						const style = node.getAttribute('style') || '';
-						if (style.includes('courier') || style.includes('monospace')) desc += '`' + node.textContent + '`';
-						else for (const child of node.childNodes) desc += walkAndExtract(child);
-					}
-					else if (tag === 'em' || tag === 'i') { desc += '_'; for (const child of node.childNodes) desc += walkAndExtract(child); desc += '_'; }
-					else if (tag === 'strong' || tag === 'b') { desc += '**'; for (const child of node.childNodes) desc += walkAndExtract(child); desc += '**'; }
-					else if (tag === 'div' && node.classList.contains('editor-indent')) { desc += '\n'; for (const child of node.childNodes) desc += walkAndExtract(child); }
-					else { for (const child of node.childNodes) desc += walkAndExtract(child); }
-				}
-				return desc;
-			};
-
-			const generalBoxes = document.querySelectorAll('.generalbox');
-			for (const box of generalBoxes) {
-				const noOverflow = box.querySelector('.no-overflow');
-				if (!noOverflow) continue;
-				if (noOverflow.textContent.includes('Work state summary')) continue;
-				const text = noOverflow.textContent.trim();
-				if (text.length < 50) continue;
-				if (text.includes('Responsable de la matière')) continue;
-
-				const clone = noOverflow.cloneNode(true);
-				const toRemove = clone.querySelectorAll('script, style, .ace_editor, pre[id^="codefile"]');
-				for (const el of toRemove) el.remove();
-
-				let desc = '';
-				for (const child of clone.childNodes) desc += walkAndExtract(child);
-				desc = desc.trim().replace(/\n{3,}/g, '\n\n');
-
-				if (desc.length > 50) { description = desc; images = extractImages(noOverflow); break; }
-			}
-
-			if (!description) {
-				const noOverflowDivs = document.querySelectorAll('.no-overflow');
-				for (const div of noOverflowDivs) {
-					if (div.textContent.includes('Work state summary')) continue;
-					const text = div.textContent.trim();
-					if (text.length < 100) continue;
-					if (text.includes('Responsable de la matière')) continue;
-
-					const clone = div.cloneNode(true);
-					const toRemove = clone.querySelectorAll('script, style, .ace_editor, pre[id^="codefile"]');
-					for (const el of toRemove) el.remove();
-
-					let desc = '';
-					for (const child of clone.childNodes) desc += walkAndExtract(child);
-					desc = desc.trim().replace(/\n{3,}/g, '\n\n');
-
-					if (desc.length > 50) { description = desc; images = extractImages(div); break; }
-				}
-			}
-
-			const h4Elements = document.querySelectorAll('h4[id^="fileid"]');
-			for (const h4 of h4Elements) {
-				const fileName = h4.textContent.trim();
-				if (!fileName) continue;
-
-				const preId = 'code' + h4.id;
-				const preElement = document.getElementById(preId);
-
-				let fileContent = '';
-				if (preElement) {
-					const aceLines = preElement.querySelectorAll('.ace_line');
-					if (aceLines.length > 0) {
-						const lines = [];
-						for (const line of aceLines) lines.push(line.textContent);
-						fileContent = lines.join('\n');
-					}
-				}
-
-				requiredFiles.push({ name: fileName, content: fileContent.trim() });
-			}
-
-			if (requiredFiles.length === 0) {
-				const allPres = document.querySelectorAll('pre.ace_editor');
-				for (const pre of allPres) {
-					const aceLines = pre.querySelectorAll('.ace_line');
-					if (aceLines.length > 0) {
-						const lines = [];
-						for (const line of aceLines) lines.push(line.textContent);
-						const content = lines.join('\n');
-						if (content.includes('# Ecrivez') || content.includes('if __name__')) {
-							requiredFiles.push({ name: 'student.py', content: content.trim() });
-							break;
-						}
-					}
-				}
-			}
-
-			if (!description && requiredFiles.length === 0) return null;
-
-			return JSON.stringify({ type: 'CodeSubmission', description: description, required_files: requiredFiles, module_id: moduleId, images: images });
-		})()
-	"#;
-
-	let result = page.evaluate(parse_script).await.map_err(|e| eyre!("Failed to parse VPL page: {}", e))?;
-
-	let json_str = match result.value().and_then(|v| v.as_str()) {
-		Some(s) => s,
-		None => return Ok(None),
-	};
-
-	let parsed: serde_json::Value = serde_json::from_str(json_str).map_err(|e| eyre!("Failed to parse VPL JSON: {}", e))?;
-
-	let description = parsed["description"].as_str().unwrap_or("").to_string();
-	let module_id = parsed["module_id"].as_str().unwrap_or("").to_string();
-
-	let images: Vec<Image> = parsed["images"]
-		.as_array()
-		.map(|arr| {
-			arr.iter()
-				.map(|img| Image {
-					url: img["url"].as_str().unwrap_or("").to_string(),
-					alt: img["alt"].as_str().map(|s| s.to_string()),
-				})
-				.collect()
-		})
-		.unwrap_or_default();
-
-	let required_files: Vec<RequiredFile> = parsed["required_files"]
-		.as_array()
-		.map(|arr| {
-			arr.iter()
-				.map(|f| RequiredFile {
-					name: f["name"].as_str().unwrap_or("").to_string(),
-					content: f["content"].as_str().unwrap_or("").to_string(),
-				})
-				.collect()
-		})
-		.unwrap_or_default();
-
-	Ok(Some(Question::CodeSubmission {
-		description,
-		required_files,
-		module_id,
-		images,
-	}))
-}
-
-/// Save the current page's HTML to disk for debugging
-/// Uses the page URL as the filename label
-#[cfg(feature = "xdg")]
-pub async fn save_page_html(page: &Page, session_id: &str) -> Result<PathBuf> {
-	let html_dir = xdg_state_dir!("persist_htmls").join(session_id);
-	std::fs::create_dir_all(&html_dir).map_err(|e| eyre!("Failed to create HTML dir: {}", e))?;
-
-	let url = page.url().await.ok().flatten().unwrap_or_default();
-	let label = url.replace("https://", "").replace("http://", "");
-
-	let html = page.evaluate("document.documentElement.outerHTML").await.map_err(|e| eyre!("Failed to get page HTML: {}", e))?;
-	let html_str = html.value().and_then(|v| v.as_str()).unwrap_or("<html></html>");
-
-	let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-	let safe_label: String = label.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
-
-	let filename = format!("{}_{}.html", timestamp, safe_label);
-	let filepath = html_dir.join(&filename);
-
-	std::fs::write(&filepath, html_str).map_err(|e| eyre!("Failed to write HTML file: {}", e))?;
-
-	log!("Saved page HTML to: {}", filepath.display());
-	Ok(filepath)
 }

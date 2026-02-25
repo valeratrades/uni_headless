@@ -32,6 +32,15 @@ pub struct AppConfig {
 	#[serde(default)]
 	pub allow_skip: bool,
 }
+impl AppConfig {
+	/// Set auto_submit at runtime
+	///
+	/// # Safety
+	/// Only call from single-threaded context or when no other references are reading this field.
+	pub unsafe fn set_auto_submit(&mut self, value: bool) {
+		self.auto_submit = value;
+	}
+}
 
 fn default_api_retries() -> u32 {
 	3
@@ -47,14 +56,4 @@ fn default_max_consecutive_failures() -> u32 {
 
 fn default_button_click_retries() -> u32 {
 	5
-}
-
-impl AppConfig {
-	/// Set auto_submit at runtime
-	///
-	/// # Safety
-	/// Only call from single-threaded context or when no other references are reading this field.
-	pub unsafe fn set_auto_submit(&mut self, value: bool) {
-		self.auto_submit = value;
-	}
 }

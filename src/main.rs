@@ -17,34 +17,6 @@ use uni_headless::{
 use v_utils::xdg_state_dir;
 use v_utils::{clientside, elog, log};
 
-#[derive(Debug, Parser)]
-#[command(name = "uni_headless")]
-#[command(about = "Automated Moodle login and navigation", long_about = None)]
-struct Args {
-	/// Target URL to navigate to after login
-	target_url: String,
-
-	/// Additional URLs to process after the first one succeeds (for VPL: only if 100% grade)
-	#[arg(short = 'd', long = "do-after")]
-	do_after: Vec<String>,
-
-	/// Use LLM to answer multi-choice questions
-	#[arg(short, long)]
-	ask_llm: bool,
-
-	/// Debug mode: interpret target_url as path to local HTML file (skips browser)
-	#[arg(long)]
-	debug_from_html: bool,
-
-	/// Manual login: skip automatic login, wait for user to manually navigate to target URL.
-	/// Requires --visible to be set.
-	#[arg(long)]
-	manual_login: bool,
-
-	#[command(flatten)]
-	settings: SettingsFlags,
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
 	clientside!();
@@ -60,7 +32,7 @@ async fn main() -> Result<()> {
 	// Session ID is just the current time HH:MM:SS
 	let session_id = Local::now().format("%H:%M:%S").to_string();
 
-	log!("Starting Moodle login automation... [session: {}]", session_id);
+	log!("Starting Moodle login automation... [session: {session_id}]");
 	log!("Visible mode: {}", config.visible);
 
 	// Create session-specific HTML directory and cleanup old sessions
@@ -96,7 +68,7 @@ async fn main() -> Result<()> {
 	};
 
 	// Launch browser
-	let (mut browser, mut handler) = Browser::launch(browser_config).await.map_err(|e| eyre!("Failed to launch browser: {}", e))?;
+	let (mut browser, mut handler) = Browser::launch(browser_config).await.map_err(|e| eyre!("Failed to launch browser: {e}"))?;
 
 	// Spawn a task to handle browser events
 	let handle = tokio::spawn(async move {
@@ -111,7 +83,7 @@ async fn main() -> Result<()> {
 		if url.starts_with("http://") || url.starts_with("https://") {
 			url
 		} else {
-			format!("https://{}", url)
+			format!("https://{url}")
 		}
 	};
 	let mut urls: Vec<String> = vec![normalize_url(args.target_url.clone())];
@@ -214,6 +186,33 @@ async fn main() -> Result<()> {
 
 	Ok(())
 }
+#[derive(Debug, Parser)]
+#[command(name = "uni_headless")]
+#[command(about = "Automated Moodle login and navigation", long_about = None)]
+struct Args {
+	/// Target URL to navigate to after login
+	target_url: String,
+
+	/// Additional URLs to process after the first one succeeds (for VPL: only if 100% grade)
+	#[arg(short = 'd', long = "do-after")]
+	do_after: Vec<String>,
+
+	/// Use LLM to answer multi-choice questions
+	#[arg(short, long)]
+	ask_llm: bool,
+
+	/// Debug mode: interpret target_url as path to local HTML file (skips browser)
+	#[arg(long)]
+	debug_from_html: bool,
+
+	/// Manual login: skip automatic login, wait for user to manually navigate to target URL.
+	/// Requires --visible to be set.
+	#[arg(long)]
+	manual_login: bool,
+
+	#[command(flatten)]
+	settings: SettingsFlags,
+}
 
 /// Process a single URL - returns (success, page) where success indicates if VPL got 100%
 async fn process_url(
@@ -227,16 +226,16 @@ async fn process_url(
 ) -> Result<(bool, chromiumoxide::Page)> {
 	// Create/navigate to page
 	let page = if debug_from_html {
-		let file_url = format!("file://{}", target_url);
-		log!("Debug mode: opening local file {}", file_url);
-		let page = browser.new_page(&file_url).await.map_err(|e| eyre!("Failed to open file: {}", e))?;
+		let file_url = format!("file://{target_url}");
+		log!("Debug mode: opening local file {file_url}");
+		let page = browser.new_page(&file_url).await.map_err(|e| eyre!("Failed to open file: {e}"))?;
 		tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 		page
 	} else if manual_login {
 		log!("Manual login mode: waiting for you to navigate to target URL...");
-		log!("Target: {}", target_url);
+		log!("Target: {target_url}");
 
-		let page = browser.new_page(target_url).await.map_err(|e| eyre!("Failed to create new page: {}", e))?;
+		let page = browser.new_page(target_url).await.map_err(|e| eyre!("Failed to create new page: {e}"))?;
 
 		let target_base = target_url.split('?').next().unwrap_or(target_url);
 		loop {
@@ -255,15 +254,15 @@ async fn process_url(
 
 		let start_url = target_url.to_string();
 
-		let page = browser.new_page(&start_url).await.map_err(|e| eyre!("Failed to create new page: {}", e))?;
-		page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for initial page load: {}", e))?;
+		let page = browser.new_page(&start_url).await.map_err(|e| eyre!("Failed to create new page: {e}"))?;
+		page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for initial page load: {e}"))?;
 
 		login_and_navigate(&page, site, target_url, config).await?;
 		page
 	};
 
-	let final_url = page.url().await.map_err(|e| eyre!("Failed to get final URL: {}", e))?;
-	log!("Successfully navigated to: {:?}", final_url);
+	let final_url = page.url().await.map_err(|e| eyre!("Failed to get final URL: {e}"))?;
+	log!("Successfully navigated to: {final_url:?}");
 
 	// Save the page HTML for debugging
 	#[cfg(feature = "xdg")]
