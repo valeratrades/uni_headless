@@ -311,22 +311,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 
 		// Display all questions on this page
 		for (i, question) in questions.iter().enumerate() {
-			let type_marker = if question.is_short_answer() {
-				"[text]"
-			} else if question.is_matching() {
-				"[match]"
-			} else if question.is_fill_in_blanks() {
-				"[fill]"
-			} else if question.is_code_block() {
-				"[code]"
-			} else if question.is_drag_drop_into_text() {
-				"[drag]"
-			} else if question.is_multi() {
-				"[multi]"
-			} else {
-				"[single]"
-			};
-			let header = format!("--- Question {} {} ---", question_num + i + 1, type_marker);
+			let header = format!("--- Question {} {} ---", question_num + i + 1, question.type_marker());
 			tracing::info!("{header}");
 			eprintln!("{header}");
 
@@ -372,22 +357,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 					consecutive_failures = 0; // Reset on success
 
 					// Collect answer display for later
-					let type_marker = if question.is_short_answer() {
-						"[text]"
-					} else if question.is_matching() {
-						"[match]"
-					} else if question.is_fill_in_blanks() {
-						"[fill]"
-					} else if question.is_code_block() {
-						"[code]"
-					} else if question.is_drag_drop_into_text() {
-						"[drag]"
-					} else if question.is_multi() {
-						"[multi]"
-					} else {
-						"[single]"
-					};
-					answer_logs.push(format!("Question {question_num} {type_marker} answer:"));
+					answer_logs.push(format!("Question {question_num} {} answer:", question.type_marker()));
 					match &answer_result {
 						LlmAnswerResult::Single { idx, text } => {
 							answer_logs.push(format!("  Selected: {}. {}", idx + 1, text));
@@ -561,20 +531,20 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 						}
 						LlmAnswerResult::Text { answer } =>
 							if let Some(input_name) = question.short_answer_input_name() {
-								set_text_answer(page, input_name, answer).await?;
+								set_input_value(page, "input", input_name, answer).await?;
 							},
 						LlmAnswerResult::Matching { selections } =>
 							for (select_name, value) in selections {
-								set_select_value(page, select_name, value).await?;
+								set_input_value(page, "select", select_name, value).await?;
 							},
 						LlmAnswerResult::FillInBlanks { answers } =>
 							for item in answers {
 								match item {
 									FillInBlanksAnswerItem::Text { input_name, answer } => {
-										set_text_answer(page, input_name, answer).await?;
+										set_input_value(page, "input", input_name, answer).await?;
 									}
 									FillInBlanksAnswerItem::Select { select_name, value } => {
-										set_select_value(page, select_name, value).await?;
+										set_input_value(page, "select", select_name, value).await?;
 									}
 								}
 							},
@@ -584,7 +554,7 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 							},
 						LlmAnswerResult::DragDropIntoText { placements } =>
 							for (input_name, choice_num) in placements {
-								set_hidden_input_value(page, input_name, &choice_num.to_string()).await?;
+								set_input_value(page, "input", input_name, &choice_num.to_string()).await?;
 							},
 					}
 				}
@@ -886,16 +856,19 @@ async fn click_vpl_button_with_retry(page: &Page, action: &str, max_retries: u32
 	Ok(false)
 }
 
-/// Set the content of a file in the VPL editor
-async fn set_vpl_file_content(page: &Page, filename: &str, content: &str) -> Result<()> {
-	// Escape the content for JavaScript
-	let escaped_content = content
-		.replace('\\', "\\\\")
+/// Escape a string for embedding in a JS template literal (backtick string).
+fn escape_for_js_template(s: &str) -> String {
+	s.replace('\\', "\\\\")
 		.replace('`', "\\`")
 		.replace('$', "\\$")
 		.replace('\n', "\\n")
 		.replace('\r', "\\r")
-		.replace('\t', "\\t");
+		.replace('\t', "\\t")
+}
+
+/// Set the content of a file in the VPL editor
+async fn set_vpl_file_content(page: &Page, filename: &str, content: &str) -> Result<()> {
+	let escaped_content = escape_for_js_template(content);
 
 	let script = format!(
 		r#"
@@ -1829,19 +1802,19 @@ async fn toggle_answer(page: &Page, input_name: &str, input_value: &str) -> Resu
 	Ok(())
 }
 
-/// Set a text answer in an input field
-async fn set_text_answer(page: &Page, input_name: &str, answer: &str) -> Result<()> {
-	// Escape special characters for JavaScript string
-	let escaped_answer = answer.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r");
+/// Set a value on an input or select element found by name attribute.
+/// Dispatches `input` and `change` events to trigger form reactivity.
+async fn set_input_value(page: &Page, element: &str, name: &str, value: &str) -> Result<()> {
+	let escaped_value = value.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r");
 
 	let script = format!(
 		r#"
 		(function() {{
-			const input = document.querySelector('input[name="{input_name}"]');
-			if (input) {{
-				input.value = "{escaped_answer}";
-				input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-				input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+			const el = document.querySelector('{element}[name="{name}"]');
+			if (el) {{
+				el.value = "{escaped_value}";
+				el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+				el.dispatchEvent(new Event('change', {{ bubbles: true }}));
 				return true;
 			}}
 			return false;
@@ -1849,61 +1822,10 @@ async fn set_text_answer(page: &Page, input_name: &str, answer: &str) -> Result<
 		"#
 	);
 
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set text answer: {e}"))?;
+	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set {element} value: {e}"))?;
 
 	if result.value().and_then(|v| v.as_bool()) != Some(true) {
-		bail!("Failed to find text input element");
-	}
-
-	Ok(())
-}
-
-/// Set a select dropdown value
-async fn set_select_value(page: &Page, select_name: &str, value: &str) -> Result<()> {
-	let script = format!(
-		r#"
-		(function() {{
-			const select = document.querySelector('select[name="{select_name}"]');
-			if (select) {{
-				select.value = "{value}";
-				select.dispatchEvent(new Event('change', {{ bubbles: true }}));
-				return true;
-			}}
-			return false;
-		}})()
-		"#
-	);
-
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set select value: {e}"))?;
-
-	if result.value().and_then(|v| v.as_bool()) != Some(true) {
-		bail!("Failed to find select element: {select_name}");
-	}
-
-	Ok(())
-}
-
-/// Set a hidden input value (used for drag-drop-into-text questions)
-async fn set_hidden_input_value(page: &Page, input_name: &str, value: &str) -> Result<()> {
-	let script = format!(
-		r#"
-		(function() {{
-			const input = document.querySelector('input[name="{input_name}"]');
-			if (input) {{
-				input.value = "{value}";
-				input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-				input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-				return true;
-			}}
-			return false;
-		}})()
-		"#
-	);
-
-	let result = page.evaluate(script).await.map_err(|e| eyre!("Failed to set hidden input value: {e}"))?;
-
-	if result.value().and_then(|v| v.as_bool()) != Some(true) {
-		bail!("Failed to find hidden input element: {input_name}");
+		bail!("Failed to find {element}[name=\"{name}\"]");
 	}
 
 	Ok(())
@@ -1911,14 +1833,7 @@ async fn set_hidden_input_value(page: &Page, input_name: &str, value: &str) -> R
 
 /// Set code in a code editor (ACE editor or textarea with code-editor role)
 async fn set_code_editor_content(page: &Page, input_name: &str, code: &str) -> Result<()> {
-	// Escape special characters for JavaScript string
-	let escaped_code = code
-		.replace('\\', "\\\\")
-		.replace('`', "\\`")
-		.replace('$', "\\$")
-		.replace('\n', "\\n")
-		.replace('\r', "\\r")
-		.replace('\t', "\\t");
+	let escaped_code = escape_for_js_template(code);
 
 	let script = format!(
 		r#"

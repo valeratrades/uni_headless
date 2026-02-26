@@ -354,11 +354,6 @@ impl Question {
 		matches!(self, Question::MultiChoice { .. })
 	}
 
-	/// Returns true if this is a code submission question
-	pub fn is_code_submission(&self) -> bool {
-		matches!(self, Question::CodeSubmission { .. })
-	}
-
 	/// Returns true if this is a short answer (text response) question
 	pub fn is_short_answer(&self) -> bool {
 		matches!(self, Question::ShortAnswer { .. })
@@ -432,6 +427,20 @@ impl Question {
 		match self {
 			Question::CodeBlock { language, .. } => Some(language),
 			_ => None,
+		}
+	}
+
+	/// Short marker string for display, e.g. "[text]", "[single]", "[multi]"
+	pub fn type_marker(&self) -> &'static str {
+		match self {
+			Question::ShortAnswer { .. } => "[text]",
+			Question::Matching { .. } => "[match]",
+			Question::FillInBlanks { .. } => "[fill]",
+			Question::CodeBlock { .. } => "[code]",
+			Question::DragDropIntoText { .. } => "[drag]",
+			Question::MultiChoice { .. } => "[multi]",
+			Question::SingleChoice { .. } => "[single]",
+			Question::CodeSubmission { .. } => "[vpl]",
 		}
 	}
 
