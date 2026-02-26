@@ -38,7 +38,7 @@
               targets = [ "x86_64-unknown-linux-gnu" "x86_64-pc-windows-msvc" ];
               cargoFlags = { "x86_64-pc-windows-msvc" = "--no-default-features"; };
               aptDeps = [ "libssl-dev" "pkg-config" "mold" ]; #Q: should it be moved to nix-develop-driven install?
-              trigger = "release_branch";
+              trigger = [ "tag" /*"release_branch"*/ ];
             };
           };
         rs = v-utils.rs { inherit pkgs rust; };
