@@ -118,11 +118,19 @@ async fn login_caseine(page: &Page, target_url: &str, config: &AppConfig) -> Res
 	let final_url = page.url().await.ok().flatten().unwrap_or_default();
 	log!("Login complete, now at: {final_url}");
 
-	// Check we ended up at the target (compare base path, ignoring query params)
+	// If not at the target, navigate there (login may have landed on a different page like the homepage)
 	let target_base = target_url.split('?').next().unwrap_or(target_url);
 	let final_base = final_url.split('?').next().unwrap_or(&final_url);
 	if final_base != target_base {
-		bail!("Login failed: expected to be at {target_url}, but at {final_url}");
+		log!("Not at target yet ({final_url}), navigating to {target_url}...");
+		page.goto(target_url).await.map_err(|e| eyre!("Failed to navigate to target: {e}"))?;
+		page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for target page: {e}"))?;
+
+		let final_url = page.url().await.ok().flatten().unwrap_or_default();
+		let final_base = final_url.split('?').next().unwrap_or(&final_url);
+		if final_base != target_base {
+			bail!("Login failed: expected to be at {target_url}, but at {final_url}");
+		}
 	}
 
 	Ok(())
@@ -156,7 +164,15 @@ async fn login_uca_moodle(page: &Page, target_url: &str, config: &AppConfig) -> 
 	if final_base == target_base {
 		log!("Login successful, at target page");
 	} else {
-		bail!("Login failed: expected to be at {target_url}, but at {final_url}");
+		log!("Not at target yet ({final_url}), navigating to {target_url}...");
+		page.goto(target_url).await.map_err(|e| eyre!("Failed to navigate to target: {e}"))?;
+		page.wait_for_navigation().await.map_err(|e| eyre!("Failed waiting for target page: {e}"))?;
+
+		let final_url = page.url().await.ok().flatten().unwrap_or_default();
+		let final_base = final_url.split('?').next().unwrap_or(&final_url);
+		if final_base != target_base {
+			bail!("Login failed: expected to be at {target_url}, but at {final_url}");
+		}
 	}
 
 	Ok(())

@@ -35,6 +35,9 @@ pub struct AppConfig {
 	/// interactively).
 	#[serde(default)]
 	pub allow_skip: bool,
+	/// Extra context appended to all LLM prompts (e.g. "code should be written in C")
+	#[serde(default)]
+	pub context: Option<String>,
 }
 impl AppConfig {
 	/// Set auto_submit at runtime

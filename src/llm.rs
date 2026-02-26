@@ -49,11 +49,12 @@ pub enum FillInBlanksAnswerItem {
 /// Ask the LLM to answer a quiz question (multiple-choice or short answer)
 pub async fn ask_llm_for_answer(page: &Page, question: &Question, config: &AppConfig) -> Result<LlmAnswerResult> {
 	let question_display = question.to_string();
+	let context_line = config.context.as_deref().map(|c| format!("IMPORTANT: {c}\n\n")).unwrap_or_default();
 
 	// Handle short answer questions
 	if question.is_short_answer() {
 		let prompt = format!(
-			r#"You are answering a short answer question. Provide a concise, direct answer.
+			r#"{context_line}You are answering a short answer question. Provide a concise, direct answer.
 
 {question_display}
 Respond with JSON only, no markdown, in this exact format:
@@ -91,7 +92,7 @@ Respond with JSON only, no markdown, in this exact format:
 		let items = question.match_items();
 
 		let prompt = format!(
-			r#"You are answering a matching question. For each item, select the correct option from its available choices.
+			r#"{context_line}You are answering a matching question. For each item, select the correct option from its available choices.
 
 {question_display}
 Respond with JSON only, no markdown, in this exact format:
@@ -156,7 +157,7 @@ Respond with JSON only, no markdown, in this exact format:
 		let fill = question.fill_in_blanks().unwrap();
 
 		let prompt = format!(
-			r#"You are answering a fill-in-the-blanks question. Fill in each numbered blank with the correct answer.
+			r#"{context_line}You are answering a fill-in-the-blanks question. Fill in each numbered blank with the correct answer.
 
 {question_display}
 Respond with JSON only, no markdown, in this exact format:
@@ -228,7 +229,7 @@ For dropdown blanks, provide the exact text of the option to select (one of the 
 		let language = question.code_block_language().unwrap_or("text");
 
 		let prompt = format!(
-			r#"You are solving a programming problem. Write the complete solution code.
+			r#"{context_line}You are solving a programming problem. Write the complete solution code.
 Think in English.
 
 {question_display}
@@ -272,7 +273,7 @@ Write correct, working code. Do not include docstrings or comments."#
 		let ddwtos = question.drag_drop_into_text().unwrap();
 
 		let prompt = format!(
-			r#"You are answering a drag-and-drop question. Place each choice into the correct drop zone.
+			r#"{context_line}You are answering a drag-and-drop question. Place each choice into the correct drop zone.
 
 {question_display}
 Respond with JSON only, no markdown, in this exact format:
@@ -329,7 +330,7 @@ IMPORTANT: Each drop zone can only accept choices from its group. Match the grou
 	let (prompt, max_tokens) = if question.is_multi() {
 		(
 			format!(
-				r#"You are answering a multiple-choice question where MULTIPLE answers may be correct. Select ALL correct answers.
+				r#"{context_line}You are answering a multiple-choice question where MULTIPLE answers may be correct. Select ALL correct answers.
 
 {question_display}
 Respond with JSON only, no markdown, in this exact format:
@@ -340,7 +341,7 @@ Respond with JSON only, no markdown, in this exact format:
 	} else {
 		(
 			format!(
-				r#"You are answering a single-choice question. Pick the ONE correct answer.
+				r#"{context_line}You are answering a single-choice question. Pick the ONE correct answer.
 
 {question_display}
 Respond with JSON only, no markdown, in this exact format:
@@ -426,6 +427,8 @@ pub async fn ask_llm_for_code(question: &Question, config: &AppConfig) -> Result
 		bail!("Expected CodeSubmission question");
 	};
 
+	let context_line = config.context.as_deref().map(|c| format!("IMPORTANT: {c}\n\n")).unwrap_or_default();
+
 	let files_list = if required_files.is_empty() {
 		"No specific files required - determine appropriate filename(s) based on the problem.".to_string()
 	} else {
@@ -443,7 +446,7 @@ pub async fn ask_llm_for_code(question: &Question, config: &AppConfig) -> Result
 	};
 
 	let prompt = format!(
-		r#"You are solving a programming assignment. Write the complete solution code.
+		r#"{context_line}You are solving a programming assignment. Write the complete solution code.
 Think in English.
 
 Problem Description:
