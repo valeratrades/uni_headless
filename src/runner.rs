@@ -10,7 +10,11 @@ use color_eyre::{
 };
 #[cfg(feature = "xdg")]
 use v_utils::xdg_state_dir;
-use v_utils::{Percent, elog, io::confirm, log};
+use v_utils::{
+	Percent, elog,
+	io::{ConfirmResult, confirmation},
+	log,
+};
 
 use crate::{
 	Blank, Choice, DragChoice, DragDropIntoText, DropZone, FillInBlanks, FillSegment, Image, MatchItem, MatchOption, Question, RequiredFile,
@@ -95,7 +99,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 	}
 
 	// Ask for confirmation before pasting (skip if auto_submit is enabled)
-	if !config.auto_submit && !confirm("Paste generated code into editor?").await {
+	if !config.auto_submit && confirmation("Paste generated code into editor?").flush().await != ConfirmResult::Yes {
 		log!("Cancelled by user");
 		return Ok(false);
 	}
@@ -192,7 +196,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 							eprintln!();
 
 							// Ask for confirmation before pasting regenerated code
-							if !config.auto_submit && !confirm("Paste regenerated code into editor?").await {
+							if !config.auto_submit && confirmation("Paste regenerated code into editor?").flush().await != ConfirmResult::Yes {
 								log!("Cancelled by user");
 								run_stop_hook(config, "VPL: Cancelled by user");
 								bail!("Evaluation failed: got {} (expected 100%)", grade * Percent(1.0));
@@ -231,7 +235,7 @@ pub async fn handle_vpl_page(page: &Page, ask_llm: bool, config: &mut AppConfig,
 /// Handle a quiz (multi-choice) page
 /// Returns Ok(true) if at least one answer was submitted, Ok(false) if questions existed but none were answered
 pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig, session_id: &str) -> Result<bool> {
-	use v_utils::io::{ConfirmAllResult, confirm_all};
+	use v_utils::io::{ConfirmResult, confirmation};
 
 	let mut question_num = 0;
 	let mut consecutive_failures = 0;
@@ -513,15 +517,15 @@ pub async fn handle_quiz_page(page: &Page, ask_llm: bool, config: &mut AppConfig
 			let confirm_msg = format!("Submit {} answer(s)?", answers_to_select.len());
 			tokio::select! {
 				biased;
-				result = confirm_all(&confirm_msg) => {
+				result = confirmation(&confirm_msg).all().flush() => {
 					match result {
-						ConfirmAllResult::Yes => Some(true),
-						ConfirmAllResult::All => {
+						ConfirmResult::Yes => Some(true),
+						ConfirmResult::All => {
 							// SAFETY: single-threaded, no concurrent reads
 							unsafe { config.set_auto_submit(true) };
 							Some(true)
 						}
-						ConfirmAllResult::No => None, // User will submit manually
+						_ => None, // User will submit manually
 					}
 				}
 				_ = wait_for_page_change(page) => {

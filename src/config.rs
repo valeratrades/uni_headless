@@ -7,7 +7,9 @@ pub struct AppConfig {
 	/// Auto-submit all LLM answers without confirmation
 	#[serde(default)]
 	pub auto_submit: bool,
-	/// Auto-click continuation prompts when found (default: false)
+	/// When no more questions remain on a page and confirmation buttons are found (e.g. "Submit
+	/// quiz", "Continue"), auto-click them instead of just logging their presence. If a modal
+	/// confirmation dialog appears after clicking, that is also auto-confirmed.
 	#[serde(default)]
 	pub continuation_prompts: bool,
 	/// Command to run on completion/error (receives message as argument)
@@ -28,7 +30,9 @@ pub struct AppConfig {
 	/// Run with visible browser window (non-headless mode)
 	#[serde(default)]
 	pub visible: bool,
-	/// Allow skipping pages without submitted answers (logs error but continues)
+	/// In headless mode, when no questions are found on a page, skip to the next page instead of
+	/// exiting. Conflicts with `visible` and `continuation_prompts` (both of which handle this
+	/// interactively).
 	#[serde(default)]
 	pub allow_skip: bool,
 }
