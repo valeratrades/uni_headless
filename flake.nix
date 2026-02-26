@@ -24,17 +24,22 @@
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
 
-        github = v-utils.github {
-          inherit pkgs pname;
-          lastSupportedVersion = "nightly-2025-11-07";
-          jobs.default = true;
-          langs = [ "rs" ];
-          releaseLatest = {
-            targets = [ "x86_64-unknown-linux-gnu" "x86_64-pc-windows-msvc" ];
-            cargoFlags = { "x86_64-pc-windows-msvc" = "--no-default-features"; };
-            aptDeps = [ "libssl-dev" "pkg-config" "mold" ]; #Q: should it be moved to nix-develop-driven install?
+        github =
+          let
+            jobDeps = { packages = [ "mold" ]; debug = true; };
+          in
+          v-utils.github {
+            inherit pkgs pname;
+            lastSupportedVersion = "nightly-2025-11-07";
+            jobs.default = true;
+            jobs.warnings.install = jobDeps;
+            langs = [ "rs" ];
+            releaseLatest = {
+              targets = [ "x86_64-unknown-linux-gnu" "x86_64-pc-windows-msvc" ];
+              cargoFlags = { "x86_64-pc-windows-msvc" = "--no-default-features"; };
+              aptDeps = [ "libssl-dev" "pkg-config" "mold" ]; #Q: should it be moved to nix-develop-driven install?
+            };
           };
-        };
         rs = v-utils.rs { inherit pkgs rust; };
         readme = v-utils.readme-fw {
           inherit pkgs pname;
