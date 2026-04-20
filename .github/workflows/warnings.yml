@@ -67,28 +67,33 @@ jobs:
     - uses: actions/checkout@v4
       with:
         path: my_gh_stuff
-        repository: valeratrades/.github
+        repository: valeratrades/v_flakes
         sparse-checkout: github/workflows
         sparse-checkout-cone-mode: false
     - name: Setup nightly Rust
       uses: dtolnay/rust-toolchain@nightly
+    - name: Install mold linker
+      run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
+        LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && sudo apt-get install -y mold"
     - name: Install qlty
       uses: qltysh/qlty-action/install@main
     - name: Initialize qlty
-      run: nix-shell -p mold pkg-config openssl.out openssl.dev mold --command "export
+      run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
         LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && qlty init --no --no-upgrade-check"
     - name: Check for code duplication
-      run: nix-shell -p mold pkg-config openssl.out openssl.dev mold --command "export
+      run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
         LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && cargo +nightly -Zscript -q my_gh_stuff/github/workflows/code-duplication.rs"
     timeout-minutes: 15
   load_nix:
@@ -174,19 +179,17 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: modified-cargo-files
-    - run: nix-shell -p mold pkg-config openssl.out openssl.dev mold --command "export
+    - run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
         LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && rm -f .cargo/config.toml .cargo/config"
-    - run: nix-shell -p mold pkg-config openssl.out openssl.dev mold --command "export
+    - run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
         LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && cargo clippy --tests -- -Dwarnings"
     timeout-minutes: 45
   rust-doc:
@@ -257,12 +260,11 @@ jobs:
       with:
         name: modified-cargo-files
     - uses: dtolnay/install@cargo-docs-rs
-    - run: nix-shell -p mold pkg-config openssl.out openssl.dev mold --command "export
+    - run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
         LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && cargo docs-rs"
     timeout-minutes: 45
   rust-machete:
@@ -326,19 +328,17 @@ jobs:
         \necho \"\"\necho \"20. System libssl:\"\nldconfig -p 2>/dev/null | grep libssl\
         \ || echo \"no system libssl\"\necho \"\"\necho \"=== END DEBUG ===\"\n"
     - name: Cargo Machete
-      run: "nix-shell -p mold pkg-config openssl.out openssl.dev mold --command \"\
-        export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\\
+      run: "nix-shell -p mold pkg-config openssl.out openssl.dev --command \"export\
+        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\\
         ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
         \\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
         $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
         \ -A openssl.out --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
         \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev\
-        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
-        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\t\t\tcargo machete\n\
-        \t\t\t\t\t\texit_code=\\$?\n\t\t\t\t\t\tif [ \\$exit_code = 0 ]; then\n\t\t\
-        \t\t\t\t\techo \\\"Found unused dependencies\\\"\n\t\t\t\t\t\t\texit \\$exit_code\n\
-        \t\t\t\t\t\tfi\n\t\t\t\""
+        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\
+        \t\t\tcargo machete\n\t\t\t\t\t\texit_code=\\$?\n\t\t\t\t\t\tif [ \\$exit_code\
+        \ = 0 ]; then\n\t\t\t\t\t\t\techo \\\"Found unused dependencies\\\"\n\t\t\t\
+        \t\t\t\texit \\$exit_code\n\t\t\t\t\t\tfi\n\t\t\t\""
   rust-sorted:
     name: Cargo Sorted
     needs: load_nix
@@ -401,19 +401,17 @@ jobs:
       with:
         tool: cargo-sort
     - name: Check if Cargo.toml is sorted
-      run: "nix-shell -p mold pkg-config openssl.out openssl.dev mold --command \"\
-        export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\\
+      run: "nix-shell -p mold pkg-config openssl.out openssl.dev --command \"export\
+        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\\
         ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
         \\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
         $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
         \ -A openssl.out --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
         \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev\
-        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
-        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && cargo sort --workspace --grouped\
-        \ --check\nexit_code=\\$?\nif [ \\$exit_code != 0 ]; then\n  echo \\\"Cargo.toml\
-        \ is not sorted. Run \\`cargo sort -w\\` to fix it.\\\"\n  exit \\$exit_code\n\
-        fi\n\""
+        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && cargo\
+        \ sort --workspace --grouped --check\nexit_code=\\$?\nif [ \\$exit_code !=\
+        \ 0 ]; then\n  echo \\\"Cargo.toml is not sorted. Run \\`cargo sort -w\\`\
+        \ to fix it.\\\"\n  exit \\$exit_code\nfi\n\""
   rust-sorted-derives:
     name: Sorted Derives
     needs: load_nix
@@ -476,19 +474,17 @@ jobs:
       with:
         tool: cargo-sort-derives
     - name: Assert derives are sorted
-      run: "nix-shell -p mold pkg-config openssl.out openssl.dev mold --command \"\
-        export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\\
+      run: "nix-shell -p mold pkg-config openssl.out openssl.dev --command \"export\
+        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\\
         ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
         \\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
         $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
         \ -A openssl.out --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
         \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev\
-        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
-        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\tcargo sort-derives\
-        \ --check\n\t\t\t\texit_code=\\$?\n\t\t\t\tif [ \\$exit_code != 0 ]; then\n\
-        \t\t\t\t\techo \\\"Derives are not sorted. Run \\`cargo sort-derives\\` to\
-        \ fix it.\\\"\n\t\t\t\t\texit \\$exit_code\n\t\t\t\tfi\n\t\t\t\""
+        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\
+        \tcargo sort-derives --check\n\t\t\t\texit_code=\\$?\n\t\t\t\tif [ \\$exit_code\
+        \ != 0 ]; then\n\t\t\t\t\techo \\\"Derives are not sorted. Run \\`cargo sort-derives\\\
+        ` to fix it.\\\"\n\t\t\t\t\texit \\$exit_code\n\t\t\t\tfi\n\t\t\t\""
   tokei:
     name: Reasonable Amount of Comments
     needs: load_nix
@@ -552,38 +548,34 @@ jobs:
       with:
         tool: tokei
     - name: Generate Tokei output
-      run: nix-shell -p mold pkg-config openssl.out openssl.dev mold --command "export
+      run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
         LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && tokei -o json > tokei_output.json"
     - name: Install jq
-      run: nix-shell -p mold pkg-config openssl.out openssl.dev mold --command "export
+      run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
         LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && sudo apt-get install -y jq"
     - name: Check Rust comments
-      run: "nix-shell -p mold pkg-config openssl.out openssl.dev mold --command \"\
-        export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\\
+      run: "nix-shell -p mold pkg-config openssl.out openssl.dev --command \"export\
+        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\\
         ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
         \\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
         $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
         \ -A openssl.out --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
         \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev\
-        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
-        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\tcomments=\\$(jq '.Rust.comments'\
-        \ tokei_output.json)\n\t\t\t\tcode=\\$(jq '.Rust.code' tokei_output.json)\n\
-        \n\t\t\t\t# compare: comments > code * 0.15\n\t\t\t\tif [ \\$((comments *\
-        \ 100)) -ge \\$((code * 15)) ]; then\n\t\t\t\t\t\techo \\\"Number of comments\
-        \ should be less than 15% of code\\\"\n\t\t\t\t\t\texit 1\n\t\t\t\telse\n\t\
-        \t\t\t\t\techo \\\"Check passed: Number of comments is less than 15% of code\\\
-        \"\n\t\t\t\tfi\n        \t\t\t\""
+        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\
+        \tcomments=\\$(jq '.Rust.comments' tokei_output.json)\n\t\t\t\tcode=\\$(jq\
+        \ '.Rust.code' tokei_output.json)\n\n\t\t\t\t# compare: comments > code *\
+        \ 0.15\n\t\t\t\tif [ \\$((comments * 100)) -ge \\$((code * 15)) ]; then\n\t\
+        \t\t\t\t\techo \\\"Number of comments should be less than 15% of code\\\"\n\
+        \t\t\t\t\t\texit 1\n\t\t\t\telse\n\t\t\t\t\t\techo \\\"Check passed: Number\
+        \ of comments is less than 15% of code\\\"\n\t\t\t\tfi\n        \t\t\t\""
 name: Warnings
 'on':
   pull_request: {}

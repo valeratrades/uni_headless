@@ -1,11 +1,12 @@
 {
   #TODO: update to latest proper way to use v-utils flakes v1.4
+  #REVIEW
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url = "github:numtide/flake-utils";
     pre-commit-hooks.url = "github:cachix/git-hooks.nix";
-    v-utils.url = "github:valeratrades/v_flakes?ref=v1.4";
+    v-utils.url = "github:valeratrades/v_flakes?ref=v1.6";
   };
   outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, v-utils }:
     flake-utils.lib.eachDefaultSystem (
@@ -24,24 +25,23 @@
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
 
+        rs = v-utils.rs { inherit pkgs rust; };
         github =
           let
             jobDeps = { packages = [ "mold" ]; debug = true; };
           in
           v-utils.github {
-            inherit pkgs pname;
+            inherit pkgs pname rs;
             lastSupportedVersion = "nightly-2025-11-07";
             jobs.default = true;
             jobs.warnings.install = jobDeps;
-            langs = [ "rs" ];
+            enable = true;
             release = {
               targets = [ "x86_64-unknown-linux-gnu" "x86_64-pc-windows-msvc" ];
               cargoFlags = { "x86_64-pc-windows-msvc" = "--no-default-features"; };
               aptDeps = [ "libssl-dev" "pkg-config" "mold" ]; #Q: should it be moved to nix-develop-driven install?
-              trigger = [ "tag" /*"release_branch"*/ ];
             };
           };
-        rs = v-utils.rs { inherit pkgs rust; };
         readme = v-utils.readme-fw {
           inherit pkgs pname;
           lastSupportedVersion = "nightly-1.93";

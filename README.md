@@ -11,7 +11,7 @@ Headless browser automation for Moodle quizzes with optional LLM-powered answer 
 <!-- markdownlint-disable -->
 <details>
 <summary>
-<h3>Installation: Windows</h3>
+<h2>Installation: Windows</h2>
 </summary>
 
 ### Windows Installation
