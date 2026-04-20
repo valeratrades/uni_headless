@@ -427,7 +427,7 @@ pub async fn ask_llm_for_code(question: &Question, config: &AppConfig) -> Result
 		bail!("Expected CodeSubmission question");
 	};
 
-	let context_line = config.context.as_deref().map(|c| format!("IMPORTANT: {c}\n\n")).unwrap_or_default();
+	let context_line = config.context.as_deref().map(|c| format!("CONTEXT: {c}\n\n")).unwrap_or_default();
 
 	let files_list = if required_files.is_empty() {
 		"No specific files required - determine appropriate filename(s) based on the problem.".to_string()

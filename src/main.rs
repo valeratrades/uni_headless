@@ -17,6 +17,33 @@ use uni_headless::{
 use v_utils::xdg_state_dir;
 use v_utils::{clientside, elog, log};
 
+#[derive(Debug, Parser)]
+#[command(name = "uni_headless")]
+#[command(about = "Automated Moodle login and navigation", long_about = None)]
+struct Args {
+	/// Target URL to navigate to after login
+	target_url: String,
+
+	/// Additional URLs to process after the first one succeeds (for VPL: only if 100% grade)
+	#[arg(short = 'd', long = "do-after")]
+	do_after: Vec<String>,
+
+	/// Use LLM to answer multi-choice questions
+	#[arg(short, long)]
+	ask_llm: bool,
+
+	/// Debug mode: interpret target_url as path to local HTML file (skips browser)
+	#[arg(long)]
+	debug_from_html: bool,
+
+	/// Manual login: skip automatic login, wait for user to manually navigate to target URL.
+	/// Requires --visible to be set.
+	#[arg(long)]
+	manual_login: bool,
+
+	#[command(flatten)]
+	settings: SettingsFlags,
+}
 #[tokio::main]
 async fn main() -> Result<()> {
 	clientside!();
@@ -185,33 +212,6 @@ async fn main() -> Result<()> {
 	}
 
 	Ok(())
-}
-#[derive(Debug, Parser)]
-#[command(name = "uni_headless")]
-#[command(about = "Automated Moodle login and navigation", long_about = None)]
-struct Args {
-	/// Target URL to navigate to after login
-	target_url: String,
-
-	/// Additional URLs to process after the first one succeeds (for VPL: only if 100% grade)
-	#[arg(short = 'd', long = "do-after")]
-	do_after: Vec<String>,
-
-	/// Use LLM to answer multi-choice questions
-	#[arg(short, long)]
-	ask_llm: bool,
-
-	/// Debug mode: interpret target_url as path to local HTML file (skips browser)
-	#[arg(long)]
-	debug_from_html: bool,
-
-	/// Manual login: skip automatic login, wait for user to manually navigate to target URL.
-	/// Requires --visible to be set.
-	#[arg(long)]
-	manual_login: bool,
-
-	#[command(flatten)]
-	settings: SettingsFlags,
 }
 
 /// Process a single URL - returns (success, page) where success indicates if VPL got 100%
