@@ -1,3 +1,5 @@
+#[cfg(feature = "xdg")]
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use chromiumoxide::browser::{Browser, BrowserConfig};
@@ -299,7 +301,7 @@ async fn process_url(
 
 /// Cleanup session directories older than 12 hours
 #[cfg(feature = "xdg")]
-fn cleanup_old_sessions(html_base: &std::path::Path) {
+fn cleanup_old_sessions(html_base: &Path) {
 	let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
 	let max_age_secs = 12 * 60 * 60; // 12 hours
 
