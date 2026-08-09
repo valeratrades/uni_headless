@@ -41,3 +41,6 @@ tabs_in_doc_comments = "allow"
 # const fns, so actually more performant
 get_first = "allow"
 get_last_with_len = "allow"
+
+[lints.rust]
+unused_features = "allow"

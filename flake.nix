@@ -1,55 +1,48 @@
 {
-  #TODO: update to latest proper way to use v-utils flakes v1.4
-  #REVIEW
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    rust-overlay.url = "github:oxalica/rust-overlay";
-    flake-utils.url = "github:numtide/flake-utils";
-    pre-commit-hooks.url = "github:cachix/git-hooks.nix";
-    v-utils.url = "github:valeratrades/v_flakes?ref=v1.6";
+    v_flakes.url = "github:valeratrades/v_flakes?ref=v1.6";
   };
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, v-utils }:
+
+  outputs =
+    { self, v_flakes }:
+    let
+      inherit (v_flakes) flake-utils pre-commit-hooks;
+      manifest = (v_flakes.nixpkgs.lib.importTOML ./Cargo.toml).package;
+      pname = manifest.name;
+    in
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        overlays = [ (import rust-overlay) ];
-        pkgs = import nixpkgs {
-          inherit system overlays;
-          allowUnfree = true;
-        };
-        rust = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
-          extensions = [ "rust-src" "rust-analyzer" "rust-docs" "rustc-codegen-cranelift-preview" ];
-        });
-        pre-commit-check = pre-commit-hooks.lib.${system}.run (v-utils.files.preCommit { inherit pkgs; });
-        manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
-        pname = manifest.name;
+        pkgs = import v_flakes.default_nixpkgs { inherit system; };
+        rust = v_flakes.rs.default_nightly system;
+        pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; });
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
 
-        rs = v-utils.rs { inherit pkgs rust; };
+        rs = v_flakes.rs { inherit pkgs rust; };
         github =
           let
             jobDeps = { packages = [ "mold" ]; debug = true; };
           in
-          v-utils.github {
+          v_flakes.github {
             inherit pkgs pname rs;
-            lastSupportedVersion = "nightly-2025-11-07";
+            enable = true;
+            lastSupportedVersion = "nightly-${v_flakes.rs.nightly_version}";
             jobs.default = true;
             jobs.warnings.install = jobDeps;
-            enable = true;
             release = {
               targets = [ "x86_64-unknown-linux-gnu" "x86_64-pc-windows-msvc" ];
               cargoFlags = { "x86_64-pc-windows-msvc" = "--no-default-features"; };
               aptDeps = [ "libssl-dev" "pkg-config" "mold" ]; #Q: should it be moved to nix-develop-driven install?
             };
           };
-        readme = v-utils.readme-fw {
+        readme = v_flakes.readme-fw {
           inherit pkgs pname;
           lastSupportedVersion = "nightly-1.93";
           rootDir = ./.;
           defaults = true;
           badges = [ "msrv" "crates_io" "docs_rs" "loc" "ci" ];
         };
-        combined = v-utils.utils.combine [ readme github rs ];
+        combined = v_flakes.utils.combine { inherit rust; modules = [ readme github rs ]; };
       in
       {
         packages =
@@ -69,6 +62,7 @@
                 openssl.dev
               ];
               nativeBuildInputs = with pkgs; [ pkg-config ];
+              RUSTC_WRAPPER = ""; # .cargo/config.toml sets sccache, absent in the sandbox
 
               cargoLock.lockFile = ./Cargo.lock;
               src = pkgs.lib.cleanSource ./.;
@@ -83,7 +77,7 @@
               pre-commit-check.shellHook +
               combined.shellHook +
               ''
-                cp -f ${(v-utils.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
+                cp -f ${(v_flakes.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
               '';
 
             packages = [
