@@ -44,3 +44,6 @@ get_last_with_len = "allow"
 
 [lints.rust]
 unused_features = "allow"
+
+[lints.cargo]
+non_kebab_case_bins = "allow"
