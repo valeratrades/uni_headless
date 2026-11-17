@@ -3,9 +3,15 @@ cargo-features = ["codegen-backend"]
 name = "uni_headless"
 version = "0.1.1"
 edition = "2024"
+repository = "https://github.com/valeratrades/uni_headless"
 
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
 
 [features]
 default = ["xdg"]
@@ -41,8 +47,11 @@ tabs_in_doc_comments = "allow"
 # const fns, so actually more performant
 get_first = "allow"
 get_last_with_len = "allow"
+if_not_else = "warn"
+integer_division = "warn"
 
 [lints.rust]
+stable_features = "allow"
 unused_features = "allow"
 
 [lints.cargo]
